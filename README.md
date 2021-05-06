@@ -193,9 +193,3 @@ before searching for and connecting to a session.
 
 ![lobby](user_data/screenshot_010.png)
 ![lobby](user_data/screenshot_011.png)
-
-
-## Cleanup
-
-1. upload to github private repo
-2. upload password-protected zip to drive
