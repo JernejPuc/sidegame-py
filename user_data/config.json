@@ -1,0 +1,133 @@
+{
+    "ClientDefault": {
+        "tick_rate": 60.0,
+        "refresh_rate": 60.0,
+        "polling_rate": 64.0,
+        "sending_rate": 32.0,
+
+        "address": "localhost",
+        "port": 49152,
+
+        "record": false,
+        "logging_level": 20,
+        "track_stats": false,
+        "show_fps": false,
+        "discrete_mouse": false,
+        "seed": null,
+
+        "render_scale": 5,
+        "mouse_sensitivity": 1.0,
+        "volume": 1.0,
+        "interp_ratio": 2.0,
+
+        "role_key": "00000000",
+        "name": "user",
+        "mmr": 0.0
+    },
+
+    "ClientDemo": {
+        "tick_rate": 30.0,
+        "refresh_rate": 60.0,
+        "polling_rate": 64.0,
+        "sending_rate": 32.0,
+
+        "address": "localhost",
+        "port": 49152,
+
+        "record": true,
+        "logging_level": 10,
+        "track_stats": true,
+        "show_fps": true,
+        "discrete_mouse": true,
+        "seed": 42,
+
+        "render_scale": 6.25,
+        "mouse_sensitivity": 1.0,
+        "volume": 1.0,
+        "interp_ratio": 2.0,
+
+        "role_key": "11111111",
+        "name": "dem0",
+        "mmr": 0.0
+    },
+
+    "ClientDev": {
+        "tick_rate": 30.0,
+        "refresh_rate": 60.0,
+        "polling_rate": 64.0,
+        "sending_rate": 32.0,
+
+        "address": "localhost",
+        "port": 49152,
+
+        "record": false,
+        "logging_level": 10,
+        "track_stats": false,
+        "show_fps": true,
+        "discrete_mouse": false,
+        "seed": null,
+
+        "render_scale": 5,
+        "mouse_sensitivity": 1.0,
+        "volume": 1.0,
+        "interp_ratio": 2.0,
+
+        "role_key": "00000000",
+        "name": "dev0",
+        "mmr": 0.0
+    },
+
+    "ServerDefault": {
+        "tick_rate": 64.0,
+        "update_rate": 32.0,
+
+        "address": "",
+        "main_port": 49152,
+        "n_subports": 2,
+
+        "logging_level": 20,
+        "show_ticks": false,
+        "seed": null,
+
+        "session_id": null,
+        "admin_key": "00000000",
+        "player_key": "11111111",
+        "spectator_key": "22222222"
+    },
+
+    "ServerDemo": {
+        "tick_rate": 64.0,
+        "update_rate": 32.0,
+
+        "address": "",
+        "main_port": 49152,
+        "n_subports": 2,
+
+        "logging_level": 10,
+        "show_ticks": true,
+        "seed": 42,
+
+        "session_id": "srv0",
+        "admin_key": "00000000",
+        "player_key": "11111111",
+        "spectator_key": "22222222"
+    },
+
+    "ServerDev": {
+        "tick_rate": 64.0,
+        "update_rate": 32.0,
+
+        "address": "",
+        "main_port": 49152,
+        "n_subports": 2,
+
+        "logging_level": 10,
+        "show_ticks": true,
+        "seed": null,
+
+        "session_id": null,
+        "admin_key": "00000000",
+        "player_key": "11111111",
+        "spectator_key": "22222222"
+    }
+}
