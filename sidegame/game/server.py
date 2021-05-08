@@ -109,7 +109,10 @@ class SDGServer(Server):
             # Transpose, because a list of lists doesn't allow "column" indexing
             data_groups = list(zip(*(state.data for state in states)))
 
-            squashed_input = [self.squash_by_index(idx, data_group) for idx, data_group in enumerate(data_groups)]
+            # Keep order in consideration
+            ctrs = [state.counter for state in states]
+
+            squashed_input = [self.squash_by_index(idx, data_group, ctrs) for idx, data_group in enumerate(data_groups)]
 
             counter = max(state.counter for state in states)
             timestamp = max(state.timestamp for state in states)
@@ -138,28 +141,49 @@ class SDGServer(Server):
 
         return action.counter
 
-    def squash_by_index(self, idx: int, seq: Iterable[Union[int, float]]) -> Union[int, float]:
+    def squash_by_index(self, idx: int, vals: Iterable[Union[int, float]], ctrs: List[int]) -> Union[int, float]:
         """
-        Produce a single value from a sequence according to its nature,
-        distinguished by its index in the packet structure.
-
-        Trigger flags are squashed with `max` to check for presence of trigger.
-
-        Multiple options are squashed by finding their median, specifically,
-        'high median', where the middle pair in even-length lists is not
-        interpolated, instead returning one existing value of the pair.
-
-        Accumulations are squashed by being added together.
+        Produce a single value from a possibly unordered sequence of values
+        according to the nature of its content, distinguished by its index
+        in the packet structure.
         """
 
+        # Trigger flags are squashed with `max` to check for presence of trigger
         if idx < 6:
-            return max(seq)
+            return max(vals)
 
-        elif idx < 15:
-            return sorted(seq)[len(seq)//2]
+        # Multiple options with overriding effects have null values filtered out, then the latest one is returned
+        elif idx == 6:
+            ctrs_vals = sorted(ctr_val for ctr_val in zip(ctrs, vals) if ctr_val[1])
+            return ctrs_vals[-1][1] if ctrs_vals else 0
 
+        # Multiple options that are orderable are reduced to their median,
+        # specifically, 'high median', where the middle pair in even-length lists is not interpolated,
+        # instead returning one existing value of the pair
+        elif idx < 9:
+            return sorted(vals)[len(vals)//2]
+
+        # Signed trigger flags are summed and clipped to get the effective trigger
+        # NOTE: Values are strictly positive (B format) and need to be offset
+        elif idx < 12:
+            return max(-1, min(1, sum(vals)-len(vals))) + 1
+
+        # Multiple options without order or clear indication of priority are reduced to their mode
+        elif idx == 12:
+            return max(vals, key=vals.count)
+
+        # Combinations of filtering out null values and getting the mode
+        elif idx == 13:
+            vals = [val for val in vals if val != GameID.NULL]
+            return max(vals, key=vals.count) if vals else GameID.NULL
+
+        elif idx == 14:
+            vals = [val for val in vals if val != Map.PLAYER_ID_NULL]
+            return max(vals, key=vals.count) if vals else Map.PLAYER_ID_NULL
+
+        # Accumulated differences are simply added together
         else:
-            return sum(seq)
+            return sum(vals)
 
     def pack_state_data(self, state: Iterable[Entry], local_log_request_counter: int) -> Iterable[bytes]:
         # HhBLf (2+2+1+4+4=13) + 12f3B (12*4+3*1=51) -> 64B

@@ -259,7 +259,9 @@ class SDGLiveClientBase(LiveClient):
                 player_id = int(event_data[0])
 
                 dc_player: Player = self.entities[player_id]
-                session.map.player_id[dc_player.get_covered_indices()] = Map.PLAYER_ID_NULL
+
+                if session.phase:
+                    session.map.player_id[dc_player.get_covered_indices()] = Map.PLAYER_ID_NULL
 
                 session.remove_player(dc_player)
                 del self.entities[player_id]
@@ -769,9 +771,10 @@ class SDGLiveClientBase(LiveClient):
                 item = player.inventory.get_item_by_id(draw_id)
                 obj = player.slots[item.slot + item.subslot]
 
-                if obj is not None:
-                    player.draw(obj)
-                    sim.audio_system.queue_sound(obj.item.sounds['draw'], player, player)
+                if obj is not None and obj is not player.held_object and not action.processed:
+                    sim.audio_system.queue_sound(item.sounds['draw'], player, player)
+
+                player.draw(obj)
 
             # No prediction is done for planting / defusing or picking / dropping stuff up,
             # i.e. these things are conveyed via lagged server state updates

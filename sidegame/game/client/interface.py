@@ -25,7 +25,7 @@ class SDGLiveClient(SDGLiveClientBase):
     while a background thread feeds sound chunks into `pyaudio.Stream`.
     """
 
-    WINDOW_NAME = 'SiDeGame v2021-05-06'
+    WINDOW_NAME = 'SiDeGame v2021-05-08'
     RENDER_SIZE = (256, 144)
 
     # Tracked mouse/keyboard state indices
@@ -110,7 +110,10 @@ class SDGLiveClient(SDGLiveClientBase):
 
                     # Evaluate console command
                     elif keysim == sdl2.SDLK_RETURN:
-                        if sim.console_text == 'mouse':
+                        if sim.console_text == 'exit':
+                            raise KeyboardInterrupt
+
+                        elif sim.console_text == 'mouse':
                             if self.cursor_trapped:
                                 sdl2.SDL_SetRelativeMouseMode(sdl2.SDL_FALSE)
                             else:
@@ -415,7 +418,7 @@ class SDGLiveClient(SDGLiveClientBase):
 
         obj = player.slots[slot + subslot]
 
-        return obj.item.id if obj is not None and obj is not player.held_object else GameID.NULL
+        return obj.item.id if obj is not None else GameID.NULL
 
     def generate_output(self, dt: float):
         self.sim.eval_effects(dt)
