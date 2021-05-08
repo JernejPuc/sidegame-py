@@ -242,11 +242,11 @@ class Session:
                 events.append(self.change_phase(GameID.PHASE_RESET, t_win=False, penalise_alive_ts=True))
 
             # CTs win by aceing Ts
-            elif self.check_lives(any, self.players_ct.values()) and not self.check_lives(all, self.players_t.values()):
+            elif self.check_lives(any, self.players_ct.values()) and not self.check_lives(any, self.players_t.values()):
                 events.append(self.change_phase(GameID.PHASE_RESET, t_win=False))
 
             # Ts win by aceing CTs
-            elif self.check_lives(any, self.players_t.values()) and not self.check_lives(all, self.players_ct.values()):
+            elif self.check_lives(any, self.players_t.values()) and not self.check_lives(any, self.players_ct.values()):
                 events.append(self.change_phase(GameID.PHASE_RESET, t_win=True))
 
         elif self.phase == GameID.PHASE_DEFUSE:
@@ -267,7 +267,7 @@ class Session:
                 self.distribute_rewards(self.players_t.values(), [], 800)
 
             # Ts win by aceing CTs
-            elif self.check_lives(any, self.players_t.values()) and not self.check_lives(all, self.players_ct.values()):
+            elif self.check_lives(any, self.players_t.values()) and not self.check_lives(any, self.players_ct.values()):
                 events.append(self.change_phase(GameID.PHASE_RESET, t_win=True))
 
         # NOTE: Waits for reset time to pass in all cases, never instantly shuts down or freezes

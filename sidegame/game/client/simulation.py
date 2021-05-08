@@ -839,10 +839,10 @@ class Simulation:
         and view. The evaluation can result in the generation of a (local) log,
         e.g. when attempting to purchase an item or send a message.
         """
-        player: Player = self.session.players[self.own_player_id]
+        player: Player = self.session.players.get(self.own_player_id, None)
 
         # Spectators can't chat or buy
-        if player.team == GameID.GROUP_SPECTATORS:
+        if player is None or player.team == GameID.GROUP_SPECTATORS:
             return None
 
         if eval_type == GameID.EVAL_BUY:

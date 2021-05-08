@@ -296,7 +296,9 @@ class SDGLiveClient(SDGLiveClientBase):
                     log = sim.create_log(GameID.EVAL_MSG_ITEM)
 
                 # Send message
-                elif keysim == sdl2.SDLK_SPACE and not session.is_spectator(sim.own_player_id):
+                elif keysim == sdl2.SDLK_SPACE and sim.view != GameID.VIEW_LOBBY and (
+                    not session.is_spectator(sim.own_player_id)
+                ):
                     log = sim.create_log(GameID.EVAL_MSG_SEND)
                     self.mkbd_state[self.MKBD_IDX_SPACE] = 0
                     self.space_time = 0.
