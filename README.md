@@ -167,6 +167,9 @@ If a change occurs while running, FPS/tick rates need to be changed accordingly.
 - Enable spawning and despawning of dummy entities on the server for testing,
 i.e. still player bots detached from clients.
 
+- Allow clients to gracefully disconnect, i.e. without the server having to
+handle a disconnection or timeout error.
+
 - Allow disconnected clients to reconnect and resume their state
 instead of automatically clearing associated data/objects on disconnection.
 
