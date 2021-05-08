@@ -87,6 +87,7 @@ class Server(ABC):
         self.session_running = True
 
         previous_clock: float = None
+        current_clock: float = None
 
         try:
             while self.session_running:
@@ -106,6 +107,13 @@ class Server(ABC):
 
         else:
             self.logger.debug('Session ended.')
+
+            # Explicitly send any final messages still in queues due to sending stride
+            if current_clock is not None:
+                self._collect_and_send_data(current_clock)
+
+                # Include slight delay to allow them to reach clients before disconnecting
+                self._tick_limiter.delay(0.5)
 
         # Cleanup
         self._socket.close()

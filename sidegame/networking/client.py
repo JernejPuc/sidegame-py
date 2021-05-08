@@ -411,6 +411,7 @@ class LiveClient(ClientBase):
         self.session_running = True
 
         previous_clock: float = None
+        current_clock: float = None
 
         try:
             while self.session_running:
@@ -440,6 +441,13 @@ class LiveClient(ClientBase):
 
         else:
             self.logger.debug('Session ended.')
+
+            # Explicitly send any final messages still in queue due to sending stride
+            if current_clock is not None:
+                self._send_client_data(current_clock)
+
+                # Include slight delay to allow them to reach the server before disconnecting
+                self._fps_limiter.delay(0.5)
 
         # Saving and cleanup
         self._socket.close()
