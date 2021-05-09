@@ -98,7 +98,7 @@ def get_distance_filters(
             sampling_rate/2. * np.exp(-0.006875*(distance/distance_scaling)**1.375),
             fs=sampling_rate)
 
-        num *= np.exp(-0.1375*(distance/distance_scaling)**0.75)
+        num *= np.exp(-0.15*(distance/distance_scaling)**0.8)
 
         distance_filters[distance] = num, den
 
@@ -247,7 +247,7 @@ class PlanarAudioSystem:
             with self.external_buffer_io_lock:
                 self.external_buffer.append(self._null_chunk)
 
-    def load_sound(self, filename: str) -> List[np.ndarray]:
+    def load_sound(self, filename: str, base_volume: float = None) -> List[np.ndarray]:
         """
         Read sound file and load the sound as a sequence of padded (overlapping)
         sound chunks.
@@ -258,7 +258,7 @@ class PlanarAudioSystem:
         The sound is also attenuated to leave room for sound summation.
         """
 
-        sound = load_sound(filename) * self._load_attenuation
+        sound = load_sound(filename) * (self._load_attenuation if base_volume is None else base_volume)
 
         back_padding = (self._chunk_size - sound.shape[1] % self._chunk_size) % self._chunk_size + 127
 

@@ -279,7 +279,6 @@ def render_view(
     entity_map: np.ndarray,
     zone_map: np.ndarray,
     endpoints: Tuple[np.ndarray],
-    obscured_lighting: float = 0.5,
     observer_id: int = 0
 ) -> np.ndarray:
     """
@@ -293,6 +292,9 @@ def render_view(
     observing entity would itself block the rays from progressing outwards.
     """
 
-    visible = sdglib.mask_visible(observer_id, height_map, entity_map, zone_map, *endpoints)[..., None]
+    view_mask = sdglib.mask_view(observer_id, height_map, entity_map, zone_map, *endpoints)[..., None]
 
-    return np.where(visible, world_view, (world_view * obscured_lighting).astype(world_view.dtype))
+    # Convert to visibility factors
+    view_mask = (view_mask + 4) / 8.
+
+    return (view_mask * world_view).astype(world_view.dtype)

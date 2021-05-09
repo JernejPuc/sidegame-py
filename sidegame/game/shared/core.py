@@ -250,13 +250,12 @@ class Map:
         self.wall = np.uint8(self.height == self.HEIGHT_IMPASSABLE)
 
         self.zone = np.empty(reference_shape, dtype=np.uint8)
+        self.zone_null = np.empty(reference_shape, dtype=np.uint8)
         self.zone_id = np.empty(reference_shape, dtype=np.int16)
         self.object_id = np.empty(reference_shape, dtype=np.int16)
         self.player_id = np.empty(reference_shape, dtype=np.int16)
+        self.player_id_null = np.empty(reference_shape, dtype=np.int16)
         self.reset()
-
-        self.null_u8 = np.zeros(reference_shape, dtype=np.uint8)
-        self.null_i16 = np.zeros(reference_shape, dtype=np.int16)
 
         spawn_origin_t_y, spawn_origin_t_x = np.where(self.landmark == self.LANDMARK_SPAWN_T)
         spawn_origin_ct_y, spawn_origin_ct_x = np.where(self.landmark == self.LANDMARK_SPAWN_CT)
@@ -281,6 +280,8 @@ class Map:
         """Fill dynamic maps with null values."""
 
         self.zone.fill(self.ZONE_NULL)
+        self.zone_null.fill(self.ZONE_NULL)
         self.zone_id.fill(self.OBJECT_ID_NULL)
         self.object_id.fill(self.OBJECT_ID_NULL)
         self.player_id.fill(self.PLAYER_ID_NULL)
+        self.player_id_null.fill(self.PLAYER_ID_NULL)

@@ -18,7 +18,7 @@ class Simulation:
 
     AUDIO_MAX_DISTANCE = 108.
     AUDIO_DISTANCE_SCALING = 512./108.
-    AUDIO_LOAD_ATTENUATION = 0.25
+    AUDIO_BASE_VOLUME = 0.25
 
     WORLD_FRAME_CENTRE = (108./2. + 1., 64. + 192./2.)  # Shift by 1px; centre in terms/items/store images is wrong
     WORLD_FRAME_ORIGIN = (95.5, 106.5)
@@ -30,6 +30,8 @@ class Simulation:
     COLOUR_RED = np.array([0, 0, 255], dtype=np.uint8)
     COLOUR_GREEN = np.array([0, 255, 0], dtype=np.uint8)
     COLOUR_BLUE = np.array([255, 0, 0], dtype=np.uint8)
+    COLOUR_ITEM_INF = np.array([140, 80, 140], dtype=np.uint8)
+    COLOUR_ITEM_FUSE = np.array([127, 127, 191], dtype=np.uint8)
 
     RING1_INDICES = (np.array([-1, 0, 0, 1], dtype=np.int16), np.array([0, -1, 1, 0], dtype=np.int16))
     RING2_INDICES = (np.array([-1, -1, 1, 1], dtype=np.int16), np.array([-1, 1, -1, 1], dtype=np.int16))
@@ -60,7 +62,7 @@ class Simulation:
             step_freq=tick_rate,
             max_distance=self.AUDIO_MAX_DISTANCE,
             distance_scaling=self.AUDIO_DISTANCE_SCALING,
-            load_attenuation=self.AUDIO_LOAD_ATTENUATION,
+            load_attenuation=self.AUDIO_BASE_VOLUME,
             volume=volume)
 
         self.effects: Dict[int, Effect] = {}
@@ -103,31 +105,31 @@ class Simulation:
         self.sounds: Dict[str, List[np.ndarray]] = {
             'clip_low': self.load_sound('sounds', 'general', 'lowammo_01.wav'),
             'clip_empty': self.load_sound('sounds', 'general', 'clipempty_rifle.wav'),
-            'msg_sent': self.load_sound('sounds', 'general', 'playerping.wav'),
-            'msg_deleted': self.load_sound('sounds', 'general', 'menu_accept.wav'),
-            'word_added': self.load_sound('sounds', 'general', 'counter_beep.wav'),
-            'msg_received': self.load_sound('sounds', 'general', 'lobby_notification_chat.wav'),
-            'mark_received': self.load_sound('sounds', 'general', 'ping_alert_01.wav'),
-            'reset_round': self.load_sound('sounds', 'general', 'pl_respawn.wav'),
-            'reset_side': self.load_sound('sounds', 'general', 'bonus_alert_start.wav'),
-            'planted': self.load_sound('sounds', 'general', 'bombpl_mod.wav'),
-            'defused': self.load_sound('sounds', 'general', 'bombdef_mod.wav'),
-            'ct_win': self.load_sound('sounds', 'general', 'ctwin_mod.wav'),
-            't_win': self.load_sound('sounds', 'general', 'terwin_mod.wav'),
+            'msg_sent': self.load_sound('sounds', 'general', 'playerping.wav', base_volume=0.5),
+            'msg_deleted': self.load_sound('sounds', 'general', 'menu_accept.wav', base_volume=0.5),
+            'word_added': self.load_sound('sounds', 'general', 'counter_beep.wav', base_volume=0.5),
+            'msg_received': self.load_sound('sounds', 'general', 'lobby_notification_chat.wav', base_volume=0.5),
+            'mark_received': self.load_sound('sounds', 'general', 'ping_alert_01.wav', base_volume=0.5),
+            'reset_round': self.load_sound('sounds', 'general', 'pl_respawn.wav', base_volume=0.5),
+            'reset_side': self.load_sound('sounds', 'general', 'bonus_alert_start.wav', base_volume=0.5),
+            'planted': self.load_sound('sounds', 'general', 'bombpl_mod.wav', base_volume=0.5),
+            'defused': self.load_sound('sounds', 'general', 'bombdef_mod.wav', base_volume=0.5),
+            'ct_win': self.load_sound('sounds', 'general', 'ctwin_mod.wav', base_volume=0.5),
+            't_win': self.load_sound('sounds', 'general', 'terwin_mod.wav', base_volume=0.5),
             'get': self.load_sound('sounds', 'general', 'pickup_weapon_01.wav'),
             'drop': self.load_sound('sounds', 'grenades', 'grenade_throw.wav'),
             'buy': self.load_sound('sounds', 'general', 'radial_menu_buy_02.wav'),
             'no_buy': self.load_sound('sounds', 'general', 'weapon_cant_buy.wav'),
-            'death': self.load_sound('sounds', 'player', 'death1.wav'),
+            'death': self.load_sound('sounds', 'player', 'death1.wav', base_volume=0.5),
             'hit': self.load_sound('sounds', 'player', 'kevlar5.wav'),
             'sine_max': self.load_sound('sounds', 'grenades', 'flashbang_sine1_new.wav'),
             'sine_mid': self.load_sound('sounds', 'grenades', 'flashbang_sine2_new.wav'),
             'sine_min': self.load_sound('sounds', 'grenades', 'flashbang_sine3_new.wav')}
 
         self.movements: List[List[np.ndarray]] = [
-            self.load_sound('sounds', 'player', 'movement1.wav'),
-            self.load_sound('sounds', 'player', 'movement2.wav'),
-            self.load_sound('sounds', 'player', 'movement3.wav')]
+            self.load_sound('sounds', 'player', 'movement1.wav', base_volume=0.125),
+            self.load_sound('sounds', 'player', 'movement2.wav', base_volume=0.125),
+            self.load_sound('sounds', 'player', 'movement3.wav', base_volume=0.125)]
 
         self.keypresses: List[List[np.ndarray]] = [self.inventory.c4.sounds[f'press{i}'] for i in range(1, 8)]
         self.footsteps: Dict[int, List[List[np.ndarray]]] = {}
@@ -139,7 +141,8 @@ class Simulation:
             terrain_path = os.path.join(ASSET_DIR, 'sounds', 'player', terrain)
 
             self.footsteps[terrain_key] = [
-                self.load_sound('sounds', 'player', terrain, soundfile) for soundfile in os.listdir(terrain_path)]
+                self.load_sound('sounds', 'player', terrain, soundfile, base_volume=0.125)
+                for soundfile in os.listdir(terrain_path)]
 
         # Specific icons
         self.icon_console_pointer = self.load_image('icons', 'pointer_console.png')
@@ -229,9 +232,9 @@ class Simulation:
         return cv2.imread(
             os.path.join(ASSET_DIR, *image_path), flags=cv2.IMREAD_GRAYSCALE if mono else cv2.IMREAD_UNCHANGED)
 
-    def load_sound(self, *sound_path: Union[str, Tuple[str]]) -> List[np.ndarray]:
+    def load_sound(self, *sound_path: Union[str, Tuple[str]], base_volume: float = None) -> List[np.ndarray]:
         """Wrapper around `audio::PlanarAudioSystem.load_sound` to minimise path specification."""
-        return self.audio_system.load_sound(os.path.join(ASSET_DIR, *sound_path))
+        return self.audio_system.load_sound(os.path.join(ASSET_DIR, *sound_path), base_volume=base_volume)
 
     def get_cursor_obs_from_code_view(self, code_view: np.ndarray) -> int:
         """Get the ID corresponding to the position above which the cursor is hovering."""
@@ -707,7 +710,15 @@ class Simulation:
                 pos_x, pos_y = round(pos_x), round(pos_y)
 
                 if 0 <= pos_y <= 107 and 0 <= pos_x <= 191:
-                    world[pos_y, pos_x] = (140, 80, 140)
+                    world[pos_y, pos_x] = self.COLOUR_ITEM_INF
+
+                    # Emphasise C4
+                    if 1 <= pos_y <= 106 and 1 <= pos_x <= 190 and an_object.item.id == GameID.ITEM_C4:
+                        ring1_indices = self.RING1_INDICES[0] + pos_y, self.RING1_INDICES[1] + pos_x
+                        ring2_indices = self.RING2_INDICES[0] + pos_y, self.RING2_INDICES[1] + pos_x
+
+                        world[ring1_indices] = np.uint8(self.COLOUR_ITEM_INF * 0.6 + world[ring1_indices] * 0.4)
+                        world[ring2_indices] = np.uint8(self.COLOUR_ITEM_INF * 0.3 + world[ring2_indices] * 0.7)
 
         # Draw alive players
         for a_player in self.session.players.values():
@@ -726,7 +737,15 @@ class Simulation:
                 pos_x, pos_y = round(pos_x), round(pos_y)
 
                 if 0 <= pos_y <= 107 and 0 <= pos_x <= 191:
-                    world[pos_y, pos_x] = (127, 127, 191)
+                    world[pos_y, pos_x] = self.COLOUR_ITEM_FUSE
+
+                    # Emphasise C4
+                    if 1 <= pos_y <= 106 and 1 <= pos_x <= 190 and an_object.item.id == GameID.ITEM_C4:
+                        ring1_indices = self.RING1_INDICES[0] + pos_y, self.RING1_INDICES[1] + pos_x
+                        ring2_indices = self.RING2_INDICES[0] + pos_y, self.RING2_INDICES[1] + pos_x
+
+                        world[ring1_indices] = np.uint8(self.COLOUR_ITEM_FUSE * 0.6 + world[ring1_indices] * 0.4)
+                        world[ring2_indices] = np.uint8(self.COLOUR_ITEM_FUSE * 0.3 + world[ring2_indices] * 0.7)
 
         # Needed for residual effects
         self.last_world_frame = world
@@ -763,7 +782,8 @@ class Simulation:
         self,
         observer: Player,
         entity: Union[Object, Player],
-        ignore_zone: bool = False
+        ignore_zone: bool = False,
+        ignore_players: bool = True
     ) -> bool:
         """
         Confirm line of sight from the observing player to an entity
@@ -811,9 +831,10 @@ class Simulation:
 
         # Trace path
         map_ = self.session.map
-        zone_map = map_.null_u8 if ignore_zone else map_.zone
+        zone_map = map_.zone_null if ignore_zone else map_.zone
+        player_id_map = map_.player_id_null if ignore_players else map_.player_id
 
-        barred_pos = sdglib.trace_sight(observer.id, observer_pos, entity_pos, map_.height, map_.player_id, zone_map)
+        barred_pos = sdglib.trace_sight(observer.id, observer_pos, entity_pos, map_.height, player_id_map, zone_map)
 
         if any(barred_pos):
             pos_x, pos_y = barred_pos

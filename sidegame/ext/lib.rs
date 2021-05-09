@@ -356,9 +356,9 @@ fn sdglib(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
         x0: i64,
         y1: i64,
         x1: i64,
-        hmap: ArrayView<u8, Ix2>,
-        emap: ArrayView<i16, Ix2>,
-        fmap: ArrayView<u8, Ix2>,
+        height_map: ArrayView<u8, Ix2>,
+        player_map: ArrayView<i16, Ix2>,
+        zone_map: ArrayView<u8, Ix2>,
         mut mask: Array<u8, Ix2>
     ) -> Array<u8, Ix2> {
 
@@ -367,6 +367,13 @@ fn sdglib(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
         let zone_smoke: u8 = 255;
 
         let (mut terrain, mut player_id, mut zone): (u8, i16, u8);
+
+        // Init for mask values
+        let visibility_level_full: u8 = 4;
+        let visibility_level_player_shadow: u8 = 2;
+        let visibility_level_smoke: u8 = 1;
+
+        let mut visibility_level: u8 = visibility_level_full;
 
         // Init for Bresenham
         let dx: i64 = (x1 - x0).abs();
@@ -392,17 +399,22 @@ fn sdglib(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
 
         // Mask up to endpoint or occlusion
         loop {
-            terrain = hmap[[ty as usize, tx as usize]];
-            player_id = emap[[ty as usize, tx as usize]];
-            zone = fmap[[ty as usize, tx as usize]];
+            terrain = height_map[[ty as usize, tx as usize]];
+            player_id = player_map[[ty as usize, tx as usize]];
+            zone = zone_map[[ty as usize, tx as usize]];
 
-            if (terrain > terrain_elevated)
-            | (zone == zone_smoke)
-            | ((player_id != player_id_null) & (player_id != self_id)) {
-                break;
+            if terrain > terrain_elevated {
+                break
+
+            } else if (zone == zone_smoke) & (visibility_level > visibility_level_smoke) {
+                visibility_level = visibility_level_smoke;
+
+            } else if (player_id != player_id_null) & (player_id != self_id)
+            & (visibility_level > visibility_level_player_shadow) {
+                visibility_level = visibility_level_player_shadow;
             }
 
-            mask[[ty as usize, tx as usize]] = 1;
+            mask[[ty as usize, tx as usize]] = visibility_level;
 
             // Bresenham
             if (tx == x1) & (ty == y1) {
@@ -425,7 +437,7 @@ fn sdglib(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
         mask
     }
 
-    fn mask_visible(
+    fn mask_view(
         self_id: i16,
         height_map: ArrayView<u8, Ix2>,
         player_map: ArrayView<i16, Ix2>,
@@ -606,9 +618,9 @@ fn sdglib(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
 
     /// Cast rays from a preset starting point towards all given endpoints, masking unoccluded points.
     /// This is done separately for left and right parts of the view.
-    #[pyfn(m, "mask_visible")]
+    #[pyfn(m, "mask_view")]
     #[text_signature = "(self_id, height_map, player_id_map, occlusion_map, left_ends_y, left_ends_x, right_ends_y, right_ends_x, /)"]
-    fn mask_visible_py<'py>(
+    fn mask_view_py<'py>(
         py: Python<'py>,
         self_id: i16,
         height_map: PyReadonlyArray2<u8>,
@@ -628,7 +640,7 @@ fn sdglib(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
         let right_ends_y = right_ends_y.as_array();
         let right_ends_x = right_ends_x.as_array();
 
-        mask_visible(self_id, height_map, player_id_map, zone_map, left_ends_y, left_ends_x, right_ends_y, right_ends_x).into_pyarray(py)
+        mask_view(self_id, height_map, player_id_map, zone_map, left_ends_y, left_ends_x, right_ends_y, right_ends_x).into_pyarray(py)
     }
 
     /// Cast ray from `pos_1`, the centre of a square with given side `length`, towards an endpoint `pos_2`,
