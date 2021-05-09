@@ -286,7 +286,7 @@ class Player(Entity, PlayerEntity):
                 item = self.inventory.get_item_by_id(draw_id)
                 obj = self.slots[item.slot + item.subslot]
 
-                if obj is not None:
+                if obj is not None and obj is not self.held_object:
                     self.draw(obj)
                     events.append(Event(Event.PLAYER_RELOAD, (self.id, Item.RLD_DRAW, self.held_object.item.id)))
 
@@ -440,7 +440,7 @@ class Player(Entity, PlayerEntity):
 
         d_pos = np.dot(rotmat, d_pos)
 
-        return d_pos / max(np.linalg.norm(d_pos), 1.) * effective_damage / self.AIM_PUNCH_DAMAGE_REFERENCE
+        return d_pos / max(np.linalg.norm(d_pos), 1.) * min(effective_damage, 33.) / self.AIM_PUNCH_DAMAGE_REFERENCE
 
     def get_tagging_factor(self):
         """
@@ -728,6 +728,9 @@ class Player(Entity, PlayerEntity):
 
     def draw(self, obj: Object):
         """Switch to given carried object."""
+
+        if obj is self.held_object:
+            return
 
         self.held_object = obj
         self.time_until_drawn = obj.item.draw_time

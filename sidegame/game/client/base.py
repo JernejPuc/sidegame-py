@@ -5,7 +5,7 @@ import struct
 import random
 from typing import Iterable, List, Tuple, Union
 from numpy.random import default_rng
-from sidegame.effects import Mark, Explosion, Flame, Fog, Gunfire, Decal, Residual
+from sidegame.effects import Colour, Mark, Explosion, Flame, Fog, Gunfire, Decal, Residual
 from sidegame.networking import Entry, Action, Entity, LiveClient
 from sidegame.game.shared import GameID, Map, Event, Message, Item, Object, Weapon, Incendiary, Smoke, Player, Session
 from sidegame.game.client.simulation import Simulation
@@ -326,7 +326,10 @@ class SDGLiveClientBase(LiveClient):
                 obj_item_id = event_data[-2]
 
                 item = inventory.get_item_by_id(obj_item_id)
-                owner = session.players[obj_owner_id]
+                owner = session.players.get(obj_owner_id, None)
+
+                if owner is None:
+                    owner = Player(Map.PLAYER_ID_NULL, sim.inventory, rng=self.rng)
 
                 # NOTE: Incendiary/smoke need cover update methods, so replacing placeholders is not enough
                 # Their lifetime also needs to be overridden to allow dropped objects to be hovered
@@ -510,15 +513,19 @@ class SDGLiveClientBase(LiveClient):
 
             elif event_id == Event.FX_C4_BEEP and accept_experienced_fx:
                 obj_id = int(event_data[0])
-                queue_sound(inventory.c4.sounds['beep_a'], observed_player, session.objects[obj_id])
+                obj = session.objects[obj_id]
+                queue_sound(inventory.c4.sounds['beep_a'], observed_player, obj)
+                sim.add_effect(Colour(Colour.get_disk_indices(3), sim.COLOUR_RED, 0.1, obj.pos[1], obj.pos[0], 0.5))
 
             elif event_id == Event.FX_C4_BEEP_DEFUSING and accept_experienced_fx:
                 obj_id = int(event_data[0])
+                obj = session.objects[obj_id]
 
                 # NOTE: Universally different sound for `BEEP_DEFUSING` would make it impossible to bluff
                 # It's only meant to inform the defuser and their team, anyway (and spectators)
                 sound = inventory.c4.sounds['beep_a' if observed_player.team == GameID.GROUP_TEAM_T else 'beep_b']
-                queue_sound(sound, observed_player, session.objects[obj_id])
+                queue_sound(sound, observed_player, obj)
+                sim.add_effect(Colour(Colour.get_disk_indices(3), sim.COLOUR_WHITE, 0.1, obj.pos[1], obj.pos[0], 0.5))
 
             elif event_id == Event.FX_BOUNCE and accept_experienced_fx:
                 obj_id = int(event_data[0])

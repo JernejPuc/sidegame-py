@@ -96,11 +96,11 @@ class SDGLiveClient(SDGLiveClientBase):
 
                 # General
                 if keysim == sdl2.SDLK_UP:
-                    sim.audio_system.volume = np.clip(sim.audio_system.volume + 0.05, 0., 1.)
+                    sim.audio_system.volume = np.clip(sim.audio_system.volume + 0.05, 0., 2.)
                     self.logger.info('Volume increased to %.2f', sim.audio_system.volume)
 
                 elif keysim == sdl2.SDLK_DOWN:
-                    sim.audio_system.volume = np.clip(sim.audio_system.volume - 0.05, 0., 1.)
+                    sim.audio_system.volume = np.clip(sim.audio_system.volume - 0.05, 0., 2.)
                     self.logger.info('Volume decreased to %.2f', sim.audio_system.volume)
 
                 # In lobby
@@ -132,7 +132,8 @@ class SDGLiveClient(SDGLiveClientBase):
                             print(print_string)
 
                         elif sim.console_text.startswith('set name'):
-                            name = [ord(m) for m in sim.console_text[9:13] + ' '*(4-len(sim.console_text[9:13]))]
+                            name = [
+                                min(ord(m), 255) for m in sim.console_text[9:13] + ' '*(4-len(sim.console_text[9:13]))]
                             log = [sim.own_player_id, GameID.CMD_SET_NAME, *name, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.]
 
                         elif sim.console_text.startswith('set team'):

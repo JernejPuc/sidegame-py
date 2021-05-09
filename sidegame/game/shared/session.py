@@ -2,9 +2,10 @@
 
 from itertools import chain
 from collections import deque
-from typing import Callable, Deque, Dict, Iterable, Tuple, Union
+from typing import Deque, Dict, Iterable, Tuple, Union
 import numpy as np
 from sidegame.game.shared.core import GameID, Map, Event
+from sidegame.game.shared.inventory import Inventory
 from sidegame.game.shared.objects import Object, C4
 from sidegame.game.shared.player import Player
 
@@ -88,12 +89,7 @@ class Session:
                 # Add newly spawned object to tracked objects
                 if event_type == Event.OBJECT_SPAWN:
                     obj: Object = event.data
-                    self.object_counter -= 1
-                    new_obj_id = self.object_counter
-
-                    obj.id = new_obj_id
-                    self.objects[new_obj_id] = obj
-                    self.map.object_id[obj.get_position_indices(obj.pos)] = new_obj_id
+                    self.add_object(obj)
 
                 # Remove expired object from tracked objects
                 elif event_type == Event.OBJECT_EXPIRE:
@@ -206,14 +202,20 @@ class Session:
         for player in self.players_ct.values():
             player.reset_round(self.map.spawn_origin_ct, self.map.player_id)
 
-        # Give C4 to a random T-side player
-        if assign_c4 and self.players_t:
-            player = self.players_t[self.rng.choice(tuple(self.players_t.keys()))]
-            item = player.inventory.c4
-            obj = C4(item, player)
+        # Give C4 to a random T-side player or spawn it if no players are eligible
+        if assign_c4:
+            if self.players_t:
+                player = self.players_t[self.rng.choice(tuple(self.players_t.keys()))]
+                item = player.inventory.c4
+                obj = C4(item, player)
 
-            player.slots[item.slot + item.subslot] = obj
-            return Event(Event.OBJECT_ASSIGN, (player.id, item.id, *obj.get_values(), player.money, 0))
+                player.slots[item.slot + item.subslot] = obj
+                return Event(Event.OBJECT_ASSIGN, (player.id, item.id, *obj.get_values(), player.money, 0))
+
+            else:
+                obj = C4(Inventory.c4, Player(Map.PLAYER_ID_NULL, Inventory, rng=self.rng))
+                obj.throw(self.map.spawn_origin_t, self.map.spawn_origin_t, 0.)
+                return Event(Event.OBJECT_SPAWN, obj)
 
         return None
 
@@ -242,11 +244,11 @@ class Session:
                 events.append(self.change_phase(GameID.PHASE_RESET, t_win=False, penalise_alive_ts=True))
 
             # CTs win by aceing Ts
-            elif self.check_lives(any, self.players_ct.values()) and not self.check_lives(any, self.players_t.values()):
+            elif self.check_any_alive(self.players_ct.values()) and not self.check_any_alive(self.players_t.values()):
                 events.append(self.change_phase(GameID.PHASE_RESET, t_win=False))
 
             # Ts win by aceing CTs
-            elif self.check_lives(any, self.players_t.values()) and not self.check_lives(any, self.players_ct.values()):
+            elif self.check_any_alive(self.players_t.values()) and not self.check_any_alive(self.players_ct.values()):
                 events.append(self.change_phase(GameID.PHASE_RESET, t_win=True))
 
         elif self.phase == GameID.PHASE_DEFUSE:
@@ -267,7 +269,7 @@ class Session:
                 self.distribute_rewards(self.players_t.values(), [], 800)
 
             # Ts win by aceing CTs
-            elif self.check_lives(any, self.players_t.values()) and not self.check_lives(any, self.players_ct.values()):
+            elif self.check_any_alive(self.players_t.values()) and not self.check_any_alive(self.players_ct.values()):
                 events.append(self.change_phase(GameID.PHASE_RESET, t_win=True))
 
         # NOTE: Waits for reset time to pass in all cases, never instantly shuts down or freezes
@@ -285,6 +287,10 @@ class Session:
                 if c4_assignment is not None:
                     events.append(c4_assignment)
 
+                    if c4_assignment.type == Event.OBJECT_SPAWN:
+                        obj: Object = c4_assignment.data
+                        self.add_object(obj)
+
             # Standard round reset
             else:
                 c4_assignment = self.reset_round()
@@ -292,6 +298,10 @@ class Session:
 
                 if c4_assignment is not None:
                     events.append(c4_assignment)
+
+                    if c4_assignment.type == Event.OBJECT_SPAWN:
+                        obj: Object = c4_assignment.data
+                        self.add_object(obj)
 
     def change_phase(
         self,
@@ -350,13 +360,13 @@ class Session:
 
         return Event(Event.CTRL_MATCH_ENDED, (self.time, self.phase, self.rounds_won_t, self.rounds_won_ct))
 
-    def check_lives(self, eval_fn: Callable, players: Iterable[Player]) -> bool:
+    def check_any_alive(self, players: Iterable[Player]) -> bool:
         """
-        Evaluate if a given subset of players remains alive.
-        Expects a boolean function, i.e. `any` or `all`.
+        Check if any player of a given group remains alive.
+        Empty groups evaluate to `True`.
         """
 
-        return eval_fn(player.health > 0. for player in players)
+        return not bool(players) or any(player.health > 0. for player in players)
 
     def distribute_rewards(
         self, winners: Iterable[Player], losers: Iterable[Player], win_reward: int, loss_streak: int = 0
@@ -391,6 +401,19 @@ class Session:
             killer.kills += 1
 
         victim.deaths += 1
+
+    def add_object(self, obj: Object):
+        """Add an object to objects tracked during the round."""
+
+        if not self.phase:
+            return
+
+        self.object_counter -= 1
+        new_obj_id = self.object_counter
+
+        obj.id = new_obj_id
+        self.objects[new_obj_id] = obj
+        self.map.object_id[obj.get_position_indices(obj.pos)] = new_obj_id
 
     def add_player(self, player: Player):
         """Add an unsorted player to the session."""

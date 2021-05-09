@@ -434,12 +434,12 @@ class SDGServer(Server):
 
         elif log_id == GameID.CHEAT_GLOBAL_BUY:
             player: Player = self.entities[player_id]
-            player.global_buy_enabled = True
+            player.global_buy_enabled = not player.global_buy_enabled
             return Event(Event.CTRL_PLAYER_CHANGED, (player_id, player.name, player.money, player.global_buy_enabled))
 
         elif log_id == GameID.CHEAT_MAX_MONEY:
             player: Player = self.entities[player_id]
-            player.money = Player.MONEY_CAP
+            player.money = Player.MONEY_CAP if player.money < Player.MONEY_CAP else 3500
             return Event(Event.CTRL_PLAYER_CHANGED, (player_id, player.name, player.money, player.global_buy_enabled))
 
         return None
