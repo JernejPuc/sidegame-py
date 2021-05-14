@@ -228,7 +228,7 @@ class Inventory:
         icon_path=join_path('icons', 'i1_rifle_t.png'),
         sound_paths={
             'draw': join_path('sounds', 'rifle_t', 'ak47_draw.wav'),
-            'attack': join_path('sounds', 'rifle_t', 'ak47.wav'),
+            'attack': join_path('sounds', 'rifle_t', 'ak47_01.wav'),
             'reload_start': join_path('sounds', 'rifle_t', 'ak47_clipout.wav'),
             'reload_add': join_path('sounds', 'rifle_t', 'ak47_clipin.wav'),
             'reload_end': join_path('sounds', 'rifle_t', 'ak47_boltpull.wav')})
