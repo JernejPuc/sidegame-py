@@ -7,7 +7,7 @@ import numpy as np
 import cv2
 from sidegame.ext import sdglib
 from sidegame.audio import PlanarAudioSystem as AudioSystem
-from sidegame.effects import Effect
+from sidegame.effects import Effect, Colour
 from sidegame.graphics import draw_image, draw_text, draw_number, draw_colour, draw_overlay, draw_muted, \
     get_camera_warp, project_into_view, get_view_endpoints, render_view
 from sidegame.game.shared import ASSET_DIR, GameID, Map, Message, Item, Inventory, Object, Player, Session
@@ -40,6 +40,10 @@ class Simulation:
     # y: 535 to x: 90, y: 103 to x: 185 || x: 20 to y: 1, x: 603 to y: 106
     MAP_WARP = np.array([[0, -95./432., 185. + 103.*95./432.], [105./583., 0, 1. - 105.*20./583.]])
 
+    SPRITE_CAP_INDICES = (np.array([1, 1, 2, 2]), np.array([1, 2, 1, 2]))
+    SPRITE_AURA_INDICES = Colour.get_disk_indices(2)
+    SPRITE_AURA_INDICES = (SPRITE_AURA_INDICES[0]+1, SPRITE_AURA_INDICES[1]+1)
+
     FOV_MAIN = 106.3
     FOV_SCOPED = 25.
 
@@ -52,7 +56,7 @@ class Simulation:
         'set role': GameID.CMD_SET_ROLE,
         'ping': GameID.CMD_GET_LATENCY,
         'rundown': GameID.CHEAT_END_ROUND,
-        'global buy': GameID.CHEAT_GLOBAL_BUY,
+        'dev mode': GameID.CHEAT_DEV_MODE,
         'max money': GameID.CHEAT_MAX_MONEY}
 
     DEFAULT_OBS = (np.Inf, Map.PLAYER_ID_NULL, GameID.NULL)
@@ -62,8 +66,8 @@ class Simulation:
             step_freq=tick_rate,
             max_distance=self.AUDIO_MAX_DISTANCE,
             distance_scaling=self.AUDIO_DISTANCE_SCALING,
-            load_attenuation=self.AUDIO_BASE_VOLUME,
-            volume=volume)
+            base_volume=self.AUDIO_BASE_VOLUME,
+            init_volume=volume)
 
         self.effects: Dict[int, Effect] = {}
         self.inventory = Inventory(self.load_image, self.load_sound)
@@ -103,6 +107,7 @@ class Simulation:
 
         # Soundbank
         self.sounds: Dict[str, List[np.ndarray]] = {
+            'ambient': self.load_sound('sounds', 'general', 'bg_phoenixfacility_01_mod.wav', base_volume=0.5),
             'clip_low': self.load_sound('sounds', 'general', 'lowammo_01.wav'),
             'clip_empty': self.load_sound('sounds', 'general', 'clipempty_rifle.wav'),
             'msg_sent': self.load_sound('sounds', 'general', 'playerping.wav', base_volume=0.5),
@@ -331,6 +336,16 @@ class Simulation:
 
     def eval_effects(self, dt: float):
         """Iterate over all active effects and step them, clearing those that expire."""
+
+        # Add ambient sound
+        # NOTE: By interacting with audio channels before evaluating new effects,
+        # the same channel should always be reserved
+        if not self.audio_system._audio_channels[0]:
+            own_player = self.session.players.get(self.own_player_id, None)
+
+            if own_player is not None:
+                self.audio_system.queue_sound(self.sounds['ambient'], own_player, own_player)
+
         expired_effect_keys = [effect_key for effect_key, effect in self.effects.items() if not effect.update(dt)]
 
         for effect_key in expired_effect_keys:
@@ -562,7 +577,7 @@ class Simulation:
 
             draw_image(window, self.addressable_icons[pos_id], 6 + i*9, 83)
             draw_number(window, int(kdr), 10 + i*9, 104)
-            draw_number(window, round(10*(kdr - int(kdr))), 10 + i*9, 110)
+            draw_number(window, int(10*(kdr - int(kdr))), 10 + i*9, 110)
 
             if observer_team != GameID.GROUP_TEAM_CT:
                 draw_number(window, money, 10 + i*9, 138)
@@ -573,7 +588,7 @@ class Simulation:
 
             draw_image(window, self.addressable_icons[pos_id], 61 + i*9, 83)
             draw_number(window, int(kdr), 65 + i*9, 104)
-            draw_number(window, round(10*(kdr - int(kdr))), 65 + i*9, 110)
+            draw_number(window, int(10*(kdr - int(kdr))), 65 + i*9, 110)
 
             if observer_team != GameID.GROUP_TEAM_T:
                 draw_number(window, money, 65 + i*9, 138)
@@ -701,6 +716,9 @@ class Simulation:
                 pos_x, pos_y = round(pos_x - 1.03125), round(pos_y - 1.03125)
                 sprite = self.sprites[a_player.team, -1]
 
+                draw_colour(
+                    world, self.SPRITE_AURA_INDICES, self.colours[a_player.position_id], opacity=0.5,
+                    pos_y=pos_y, pos_x=pos_x, bounds=self.WORLD_BOUNDS)
                 draw_image(world, sprite, pos_y, pos_x, bounds=self.WORLD_BOUNDS)
 
         # Draw persistent objects (with infinite lifetime)
@@ -729,6 +747,9 @@ class Simulation:
                 sprite = self.sprites[a_player.team, angle]
 
                 draw_image(world, sprite, pos_y, pos_x, bounds=self.WORLD_BOUNDS)
+                draw_colour(
+                    world, self.SPRITE_CAP_INDICES, self.colours[a_player.position_id], opacity=0.625,
+                    pos_y=pos_y, pos_x=pos_x, bounds=self.WORLD_BOUNDS)
 
         # Draw transient objects (with finite lifetime)
         for an_object in self.session.objects.values():
@@ -873,7 +894,7 @@ class Simulation:
                 hover_id = self.get_cursor_obs_from_code_view(self.code_view_store_ct)
 
             if hover_id:
-                if player.money >= self.inventory.get_item_by_id(hover_id).price:
+                if player.money >= self.inventory.get_item_by_id(hover_id).price or player.dev_mode:
                     self.audio_system.queue_sound(self.sounds['buy'], player, player)
                 else:
                     self.audio_system.queue_sound(self.sounds['no_buy'], player, player)

@@ -297,12 +297,12 @@ class SDGLiveClientBase(LiveClient):
                 player_id = int(event_data[0])
                 name = ''.join(chr(int(ordinal)) for ordinal in event_data[1:5])
                 money = int(event_data[5])
-                global_buy_enabled = bool(event_data[6])
+                dev_mode = bool(event_data[6])
 
                 player: Player = session.players[player_id]
                 player.name = name
                 player.money = money
-                player.global_buy_enabled = global_buy_enabled
+                player.dev_mode = dev_mode
 
             elif event_id == Event.CTRL_LATENCY_REQUESTED:
                 requestor_id = event_data[10]
@@ -555,7 +555,7 @@ class SDGLiveClientBase(LiveClient):
                 # NOTE: Own player wall hits are already predicted and grenade throw SFX is handled by drop (assign)
                 if attacker_id != sim.own_player_id and item.slot != Item.SLOT_UTILITY:
                     source = session.players[attacker_id]
-                    queue_sound(item.sounds['attack'], observed_player, source)
+                    queue_sound(item.sounds['attack'], observed_player, source, override=True)
 
                     # Add gunfire
                     if item.slot in Item.WEAPON_SLOTS:
@@ -751,7 +751,7 @@ class SDGLiveClientBase(LiveClient):
                         sim.audio_system.queue_sound(sound, player, player)
 
             # In buy phase, prevent movement and firing
-            if session.phase == GameID.PHASE_BUY and not player.global_buy_enabled:
+            if session.phase == GameID.PHASE_BUY and not player.dev_mode:
                 force_w = 0
                 force_d = 0
                 attack = 0
@@ -817,7 +817,7 @@ class SDGLiveClientBase(LiveClient):
 
                                 # Throws already handled by drop (assign)
                                 if item.slot != Item.SLOT_UTILITY:
-                                    sim.audio_system.queue_sound(item.sounds['attack'], player, player)
+                                    sim.audio_system.queue_sound(item.sounds['attack'], player, player, override=True)
 
                                     # Add muzzle flash
                                     if item.slot in Item.WEAPON_SLOTS:

@@ -20,10 +20,11 @@ class OrientedSound:
     relative distance and angle between source and listener entities.
     """
 
-    def __init__(self, sound: np.ndarray, listener: OrientedEntity, source: OrientedEntity):
+    def __init__(self, sound: np.ndarray, listener: OrientedEntity, source: OrientedEntity, origin: List[np.ndarray]):
         self.sound = sound
         self.listener = listener
         self.source = source
+        self.origin = origin
 
     def get_distance(self) -> float:
         """Get the relative distance between the listener and the source."""
@@ -94,11 +95,8 @@ def get_distance_filters(
 
     for distance in range(1, int(distance_scaling*max_distance)+1):
         num, den = butter(
-            3,
-            sampling_rate/2. * np.exp(-0.006875*(distance/distance_scaling)**1.375),
-            fs=sampling_rate)
-
-        num *= np.exp(-0.15*(distance/distance_scaling)**0.8)
+            3, 100. + (sampling_rate/2. - 100.) * np.exp(-0.004*(distance/distance_scaling)**1.55), fs=sampling_rate)
+        num *= np.exp(-0.25*(distance/distance_scaling)**0.6)
 
         distance_filters[distance] = num, den
 
@@ -153,9 +151,9 @@ class PlanarAudioSystem:
         step_freq: Union[int, float] = 30,
         max_distance: float = 100.,
         distance_scaling: float = 1.,
-        load_attenuation: float = 0.25,
-        volume: float = 1.,
-        max_n_sounds: int = 25
+        base_volume: float = 0.25,
+        init_volume: float = 1.,
+        max_n_sounds: int = 32
     ):
         self._audio: pyaudio.PyAudio = None
         self._stream: pyaudio.Stream = None
@@ -171,8 +169,8 @@ class PlanarAudioSystem:
         self._distance_filters = get_distance_filters(max_distance, distance_scaling, self.SAMPLING_RATE)
         self._hrir_filters = get_hrir_filters()
 
-        self._load_attenuation = load_attenuation
-        self.volume = volume
+        self._base_volume = base_volume
+        self.volume = init_volume
 
         self.external_buffer: Deque[np.ndarray] = deque()
         self.external_buffer_io_lock = threading.Lock()
@@ -258,7 +256,7 @@ class PlanarAudioSystem:
         The sound is also attenuated to leave room for sound summation.
         """
 
-        sound = load_sound(filename) * (self._load_attenuation if base_volume is None else base_volume)
+        sound = load_sound(filename) * (self._base_volume if base_volume is None else base_volume)
 
         back_padding = (self._chunk_size - sound.shape[1] % self._chunk_size) % self._chunk_size + 127
 
@@ -274,14 +272,39 @@ class PlanarAudioSystem:
 
         return list(chunks)
 
-    def queue_sound(self, sound: List[np.ndarray], listener: OrientedEntity, source: OrientedEntity):
-        """Append a copy of the sound sequence to the first free audio channel."""
+    def queue_sound(
+        self,
+        sound: List[np.ndarray],
+        listener: OrientedEntity,
+        source: OrientedEntity,
+        override: bool = False
+    ):
+        """
+        Add a copy of the sound sequence to the first free audio channel.
+        If all channels are in use, the sequence is added to the one
+        with the shortest queue.
+
+        Optionally, the queueing can be overriding. That is, if the same sound
+        with the same source is already queued in some audio channel
+        and its only occupant, the channel can be cleared and extended anew.
+        """
 
         with self._audio_channels_io_lock:
-            for channel in self._audio_channels:
-                if not channel:
-                    channel.extend(OrientedSound(chunk, listener, source) for chunk in sound)
-                    break
+            channel = None
+
+            if override:
+                candidates = [
+                    audio_channel for audio_channel in self._audio_channels
+                    if (audio_channel and audio_channel[0].source is source and audio_channel[0].origin is sound)]
+
+                if candidates and all((chunk.source is source and chunk.origin is sound) for chunk in candidates[0]):
+                    channel = candidates[0]
+                    channel.clear()
+
+            if channel is None:
+                channel = min(self._audio_channels, key=len)
+
+            channel.extend(OrientedSound(chunk, listener, source, sound) for chunk in sound)
 
     def _sum_sounds(self, sounds: List[np.ndarray]) -> np.ndarray:
         """
