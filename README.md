@@ -28,12 +28,16 @@ Note that many aspects of the game do not translate well to a 2D setting.
 Most obviously, the loss of verticality limits the map pool
 and how the world can be perceived.
 
-Some assets from CSGO were retained, e.g. the radar-based world map and game sounds,
-and the positional audio implementation relies on data from
+Some assets from CSGO were retained. For example, an old radar image of `de_cache`
+was modified and repurposed as a base for the in-game world, while a subset of
+original game sounds was either copied or slightly modified. Additionally,
+the positional audio implementation relies on data from
 [The FABIAN head-related transfer function data base](http://dx.doi.org/10.14279/depositonce-5718.5).
-Otherwise, unless explicitly referenced, the assets and code are of my own making.
-Systems, such as positional audio or multiplayer networking,
-were based on documents written by Valve or members of the online community,
+All other assets, such as icons, sprites, the HUD, etc. were made by me.
+
+Unless explicitly referenced in specific docstrings or notes in development notebooks,
+the code is of my own making. Systems, such as positional audio or multiplayer networking,
+were based on comments or documents written by Valve or members of online communities,
 but did not build on any specific code.
 
 
@@ -41,18 +45,31 @@ but did not build on any specific code.
 
 Start by downloading or cloning this repository.
 
-If you already have `python` on your system, most of the packages listed in
-`requirements.txt` should have their dependencies met or handled during setup.
-Exceptions (on Linux) are `pysdl2` and `pyaudio`, which (might) need you to
-execute the following:
+If you already have `python` on your system, the packages listed in
+`requirements.txt` should have their dependencies met or handled during setup,
+but `pysdl2` and `pyaudio` might need some prior attention.
+
+
+### Dependencies of dependencies
+
+On Linux, you may need to execute the following:
 
 ```bash
 sudo apt install libsdl2-dev libsdl2-2.0-0
 sudo apt install portaudio19-dev
 ```
 
+Should `pyaudio` fail to install on Windows, you could try installing it from a
+[wheel](https://www.lfd.uci.edu/~gohlke/pythonlibs/#pyaudio).
+If suggested by the error message, you might also need to install the
+[Visual C++ build tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
+or [Visual C++ redistributables](https://support.microsoft.com/en-us/topic/the-latest-supported-visual-c-downloads-2647da03-1eea-4433-9aff-95f26a218cc0).
+
 See the project descriptions of [pysdl2](https://pypi.org/project/PySDL2/)
 and [pyaudio](https://people.csail.mit.edu/hubert/pyaudio/) for more details.
+
+
+### `sdglib`
 
 Note that `sidegame` relies on a small library of its own.
 In `sidegame/ext`, you can find multiple binary files:
@@ -69,6 +86,9 @@ and [building with PyO3](https://pyo3.rs/v0.13.2/building_and_distribution.html)
 
 Determine or build the appropriate binary file and rename it to
 `sdglib.pyd` (Windows) or `sdglib.so` (Linux).
+
+
+### Editable install
 
 Afterwards, `sidegame` can be installed (in editable/development mode)
 from the `sidegame-py` directory with:
@@ -103,6 +123,9 @@ The matchmaking server and replay client can be launched similarly. Note that
 the latter does not require a server to bind to, but rather a pre-recorded
 demo (network message history).
 
+
+#### Parameter configuration
+
 There are multiple ways to override default launch parameters.
 The order of priority is as follows:
 1. In-terminal argument specification
@@ -112,7 +135,42 @@ The order of priority is as follows:
 Editing or adding a sub-configuration to `config.json` should be the most
 convenient way to simplify repeated launches in customised settings.
 In any case, you can execute `python name-of-script.py --help`
-for details on the optional arguments.
+for details on optional arguments.
+
+
+#### Controls and in-game commands
+
+The controls adhere to the following scheme:
+
+![controls](controls.png)
+
+As a basic measure of organisation, clients are assigned a role, which
+determines their privileges, i.e. available in-game commands in a session.
+Additionally, there are some local commands, which do not interact with the
+server and can be used freely.
+
+0. Local commands:
+    - `mouse`: Toggle whether the system mouse cursor is hidden and restricted to the window.
+    - `stats`: Print out the summary of statistics if stat tracking is turned on.
+    - `exit`: End (own) client process.
+
+1. Spectator commands:
+    - `set role ABCDEFGH`: Set role corresponding to an 8-character (hex) key.
+    - `set name ABCD`: Change name to a 4-character string (of select characters).
+
+2. Player commands:
+    - `set team B`: Move yourself to team (group) `B`, i.e. `T`, `CT`, or `S`.
+    - `ping`: Print out the round-trip latencies of all active players in the match.
+
+3. Admin commands:
+    - `set team A B`: Move client with ID `A` to team (group) `B`.
+    - `start`: Start the match.
+    - `stop`: Stop the match.
+    - `quit`: End the session, and both server and each connected client process along with it.
+    - `dev mode`: Enable buying of items regardless of money, match phase, or distance to the spawn point,
+    and prevent incoming damage from affecting health points.
+    - `max money`: Set money to its cap value.
+    - `rundown`: Run down the timer for the buy or main (plant) phase.
 
 
 ### AI actor interface
@@ -126,10 +184,10 @@ An example implementation can be viewed in a separate, though related, repositor
 
 ### Notes on performance
 
-At its base resolution (`256x144`), `sidegame` is capable of being rendered
-at several hundreds of (average) FPS, which should make it light enough to not be a
-bottleneck in distributed AI training processes (network and device synchronisation
-should probably play a larger role).
+At its base resolution (`256x144`), `sidegame` should be able to be rendered
+at hundreds of FPS (on average - drops can still occur), which should
+make it light enough to not be a bottleneck in distributed AI training processes
+(network and device synchronisation should probably play a larger role).
 
 For human interfaces, it is expected to be upscaled to higher resolutions, where
 FPS is effectively limited by the argument `render_scale`. For example, scale
@@ -157,6 +215,9 @@ port forwarding, etc.
 
 
 ## Backlog
+
+- Prevent FPS drops and sound tearing in situations with many simultaneous effects
+by e.g. disregarding effects out of line of sight and optimising effect handling in general.
 
 - Add checksums or something that would validate packet structure and content wrt. current
 state of the match and participants before it is attempted to be unpacked and applied.
