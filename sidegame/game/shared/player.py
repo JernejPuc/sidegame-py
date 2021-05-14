@@ -29,7 +29,7 @@ class Player(Entity, PlayerEntity):
     MAX_PICKUP_RANGE = 16.
     MAX_ACCEPTABLE_LAG = 0.25  # Includes artificial interp. window lag
     TAGGING_RECOVERY_TIME = 0.5
-    AIM_PUNCH_DAMAGE_REFERENCE = 10.
+    AIM_PUNCH_DAMAGE_REFERENCE = 36.
 
     LOG10E = np.log10(np.e)
     DT64 = 1. / (64. - 1.)  # Tick-independent formula factor, standardised to 64 ticks
@@ -51,7 +51,7 @@ class Player(Entity, PlayerEntity):
         self.name = '    '
         self.role: int = GameID.ROLE_SPECTATOR
         self.latency = 0.
-        self.global_buy_enabled = False
+        self.dev_mode = False
 
         # NOTE: The player is reassigned after initialisation
         self.team = GameID.GROUP_SPECTATORS
@@ -143,7 +143,7 @@ class Player(Entity, PlayerEntity):
 
         self.name = name
 
-        return Event(Event.CTRL_PLAYER_CHANGED, (self.id, name, self.money, self.global_buy_enabled))
+        return Event(Event.CTRL_PLAYER_CHANGED, (self.id, name, self.money, self.dev_mode))
 
     def set_team(self, team: int, position_id: int) -> Event:
         """
@@ -187,7 +187,7 @@ class Player(Entity, PlayerEntity):
             _, view, hovered_id, hovered_entity_id, d_angle = action.data
 
         # In buy phase, prevent movement and firing
-        if grounded and not self.global_buy_enabled:
+        if grounded and not self.dev_mode:
             force_w = 0
             force_d = 0
             attack = 0
@@ -355,7 +355,8 @@ class Player(Entity, PlayerEntity):
             dmg = apen * dmg
 
         # Apply effective damage
-        self.health -= dmg
+        if not self.dev_mode:
+            self.health -= dmg
 
         # Add recoil
         if recoil:
@@ -440,7 +441,7 @@ class Player(Entity, PlayerEntity):
 
         d_pos = np.dot(rotmat, d_pos)
 
-        return d_pos / max(np.linalg.norm(d_pos), 1.) * min(effective_damage, 33.) / self.AIM_PUNCH_DAMAGE_REFERENCE
+        return d_pos / max(np.linalg.norm(d_pos), 1.) * effective_damage / self.AIM_PUNCH_DAMAGE_REFERENCE
 
     def get_tagging_factor(self):
         """
@@ -629,10 +630,11 @@ class Player(Entity, PlayerEntity):
         item = self.inventory.get_item_by_id(item_id)
 
         # Try to buy
-        if self.money < item.price:
-            return None
+        if not self.dev_mode:
+            if self.money < item.price:
+                return None
 
-        self.add_money(-item.price)
+            self.add_money(-item.price)
 
         obj = self.slots[item.slot + item.subslot]
 

@@ -292,14 +292,15 @@ class StatTracker:
                 self.tracked_item_buys[item.id] += 1
 
         # Flags for objective success rate
-        elif event_id == Event.C4_PLANTED:
+        elif event_id == Event.C4_PLANTED and self.session.phase == GameID.PHASE_PLANT:
             planter_id = int(event_data[0])
 
-            if planter_id in self.session.groups[self.own_player.team] and self.session.phase == GameID.PHASE_PLANT:
+            if planter_id in self.session.groups[self.own_player.team]:
                 self.temp_scores['allies_planted'] = 1
 
                 if planter_id == self.own_player.id:
                     self.temp_scores['planted'] = 1
+
             else:
                 self.temp_scores['enemies_planted'] = 1
 

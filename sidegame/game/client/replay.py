@@ -324,11 +324,11 @@ class SDGReplayClient(ReplayClient):
                     self.logger.info("Screenshot saved to: '%s'.", file_path)
 
                 # Quit
-                elif keysim == sdl2.SDLK_BACKSPACE:
+                elif keysim == sdl2.SDLK_ESCAPE:
                     return self.CMD_EXIT, None
 
                 # (Un)Pause
-                elif keysim == sdl2.SDLK_ESCAPE:
+                elif keysim == sdl2.SDLK_SPACE or keysim == sdl2.SDLK_k:
                     self.paused = not self.paused
                     self.logger.info('Replay paused.' if self.paused else 'Replay resumed.')
 
@@ -353,17 +353,17 @@ class SDGReplayClient(ReplayClient):
                     self.logger.info('Replay speed changed to %.2f.', self.SPEEDUPS[self.speedup_idx])
 
                 # Restart
-                elif keysim == sdl2.SDLK_RETURN:
+                elif keysim == sdl2.SDLK_BACKSPACE or keysim == sdl2.SDLK_RETURN:
                     self.logger.info('Restarting replay...')
                     return self.CMD_NONE, self.jump_to_timestamp(current_timestamp, 0.)
 
                 # Jump 10 secs ahead
-                elif keysim == sdl2.SDLK_d:
+                elif keysim == sdl2.SDLK_l:
                     self.logger.info('Forwarding 10 seconds ahead...')
                     return self.CMD_NONE, self.jump_to_timestamp(current_timestamp, current_timestamp + 10.)
 
                 # Jump 10 secs back
-                elif keysim == sdl2.SDLK_a:
+                elif keysim == sdl2.SDLK_j:
                     self.logger.info('Rewinding 10 seconds back...')
                     return self.CMD_NONE, self.jump_to_timestamp(current_timestamp, max(0., current_timestamp - 10.))
 

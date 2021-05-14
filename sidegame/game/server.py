@@ -246,8 +246,15 @@ class SDGServer(Server):
         lag: float,
         lerp: float
     ) -> Iterable[Any]:
+
         session = self.session
         player: Player = entity
+
+        # NOTE: In physically close networks, lag could potentially come out slightly negative (-0.0005, -0.0009, ...)
+        # due to the client and server's compensation of differences between the times
+        # when messages were sent and when they were processed (depends on tick intervals)
+        # Thus, it needs to be clipped to prevent lag compensation from being affected (undercutting lerp)
+        player.latency = max(0., lag)
 
         # Assign to a group on first action eval after connecting
         if player.id not in session.players:
@@ -263,12 +270,6 @@ class SDGServer(Server):
 
         # In buy phase, prevent movement and firing
         grounded = session.phase == GameID.PHASE_BUY
-
-        # NOTE: In physically close networks, lag could potentially come out slightly negative (-0.0005, -0.0009, ...)
-        # due to the client and server's compensation of differences between the times
-        # when messages were sent and when they were processed (depends on tick intervals)
-        # Thus, it needs to be clipped to prevent lag compensation from being affected (undercutting lerp)
-        player.latency = max(0., lag)
 
         return player.update(action, session.players, session.objects, session.map, timestamp, lag+lerp, grounded)
 
@@ -374,6 +375,11 @@ class SDGServer(Server):
         # Player elevated commands
         if log_id == GameID.CMD_SET_TEAM:
             moved_player_id, team = log_data[2:4]
+
+            # Correction to allow only the admin to move other players
+            if user_role < GameID.ROLE_ADMIN and moved_player_id != player_id:
+                return None
+
             return self.session.move_player(moved_player_id, team)
 
         elif log_id == GameID.LOG_BUY:
@@ -432,15 +438,15 @@ class SDGServer(Server):
             elif self.session.phase == GameID.PHASE_PLANT:
                 self.session.time = Session.TIME_TO_PLANT
 
-        elif log_id == GameID.CHEAT_GLOBAL_BUY:
+        elif log_id == GameID.CHEAT_DEV_MODE:
             player: Player = self.entities[player_id]
-            player.global_buy_enabled = not player.global_buy_enabled
-            return Event(Event.CTRL_PLAYER_CHANGED, (player_id, player.name, player.money, player.global_buy_enabled))
+            player.dev_mode = not player.dev_mode
+            return Event(Event.CTRL_PLAYER_CHANGED, (player_id, player.name, player.money, player.dev_mode))
 
         elif log_id == GameID.CHEAT_MAX_MONEY:
             player: Player = self.entities[player_id]
-            player.money = Player.MONEY_CAP if player.money < Player.MONEY_CAP else 3500
-            return Event(Event.CTRL_PLAYER_CHANGED, (player_id, player.name, player.money, player.global_buy_enabled))
+            player.money = Player.MONEY_CAP
+            return Event(Event.CTRL_PLAYER_CHANGED, (player_id, player.name, player.money, player.dev_mode))
 
         return None
 
@@ -485,12 +491,12 @@ class SDGServer(Server):
             data = [float(player_id), 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., team, position_id, event_type]
 
         elif event_type == Event.CTRL_PLAYER_CHANGED:
-            player_id, name, money, global_buy_enabled = event.data
+            player_id, name, money, dev_mode = event.data
 
             data = [
                 float(player_id),
                 float(ord(name[0])), float(ord(name[1])), float(ord(name[2])), float(ord(name[3])),
-                float(money), float(global_buy_enabled), 0., 0., 0., 0., 0., 0, 0, event_type]
+                float(money), float(dev_mode), 0., 0., 0., 0., 0., 0, 0, event_type]
 
         elif event_type == Event.CTRL_LATENCY_REQUESTED:
             requestor_id, latencies = event.data

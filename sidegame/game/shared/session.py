@@ -488,7 +488,7 @@ class Session:
         # Check phase/time and distance to spawn point
         valid_distance = np.linalg.norm(player.pos - spawn_point) <= Player.MAX_BUY_RANGE
 
-        return player.global_buy_enabled or (valid_distance and (
+        return player.dev_mode or (valid_distance and (
             self.phase == GameID.PHASE_BUY or (self.phase == GameID.PHASE_PLANT and self.time < self.TIME_TO_BUY)))
 
     def check_player_message_access(self, player_id: int, sender_id: int) -> bool:

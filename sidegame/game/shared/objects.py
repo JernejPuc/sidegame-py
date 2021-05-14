@@ -592,13 +592,19 @@ class Smoke(Object):
         """
         Evaluate object lifetime and return any resulting events.
 
-        Can include a trigger event.
+        Can include a trigger event, which can happen prematurely if the
+        object has reached the end of its movement trajectory.
         """
 
         self.lifetime -= dt
 
         if self.lifetime > self.item.duration:
-            return self.update_move(dt, _map)
+            if self.pos_target is None:
+                self.lifetime = min(self.lifetime, self.item.duration + 0.5)
+                return Event.EMPTY_EVENT_LIST
+
+            else:
+                return self.update_move(dt, _map)
 
         elif not self.triggered:
             self.triggered = True

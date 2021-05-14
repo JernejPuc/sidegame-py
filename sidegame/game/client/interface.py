@@ -106,7 +106,7 @@ class SDGLiveClient(SDGLiveClientBase):
                 # In lobby
                 elif sim.view == GameID.VIEW_LOBBY:
                     if keysim == sdl2.SDLK_ESCAPE:
-                        sim.enter_world()
+                        continue
 
                     # Evaluate console command
                     elif keysim == sdl2.SDLK_RETURN:
@@ -146,8 +146,11 @@ class SDGLiveClient(SDGLiveClientBase):
                                     team = GameID.GROUP_TEAM_T
                                 elif words[3] == 'ct':
                                     team = GameID.GROUP_TEAM_CT
-                                else:
+                                elif words[3] == 's':
                                     team = GameID.GROUP_SPECTATORS
+                                else:
+                                    team = GameID.NULL
+
                             elif len(words) >= 3:
                                 moved_player_id = sim.own_player_id
 
@@ -155,12 +158,18 @@ class SDGLiveClient(SDGLiveClientBase):
                                     team = GameID.GROUP_TEAM_T
                                 elif words[2] == 'ct':
                                     team = GameID.GROUP_TEAM_CT
-                                else:
+                                elif words[2] == 's':
                                     team = GameID.GROUP_SPECTATORS
+                                else:
+                                    team = GameID.NULL
 
-                            log = [
-                                sim.own_player_id, GameID.CMD_SET_TEAM, moved_player_id, team,
-                                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.]
+                            else:
+                                team = GameID.NULL
+
+                            if team != GameID.NULL:
+                                log = [
+                                    sim.own_player_id, GameID.CMD_SET_TEAM, moved_player_id, team,
+                                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.]
 
                         elif sim.console_text.startswith('set role'):
                             self.role_key = '0x' + sim.console_text.split(' ')[-1]
@@ -192,16 +201,12 @@ class SDGLiveClient(SDGLiveClientBase):
 
                 # Spectator in world view
                 elif session.is_spectator(sim.own_player_id):
-                    if keysim == sdl2.SDLK_ESCAPE:
-                        sim.exit_world()
-                    elif keysim == sdl2.SDLK_TAB and session.phase:
+                    if keysim == sdl2.SDLK_TAB and session.phase:
                         sim.view = GameID.VIEW_MAPSTATS
 
                 # Player in world view
                 elif session.phase:
-                    if keysim == sdl2.SDLK_ESCAPE:
-                        sim.exit_world()
-                    elif keysim == sdl2.SDLK_w:
+                    if keysim == sdl2.SDLK_w:
                         self.mkbd_state[self.MKBD_IDX_W] = 1
                     elif keysim == sdl2.SDLK_s:
                         self.mkbd_state[self.MKBD_IDX_S] = -1
@@ -286,6 +291,12 @@ class SDGLiveClient(SDGLiveClientBase):
                 elif keysim == sdl2.SDLK_e:
                     self.mkbd_state[self.MKBD_IDX_E] = 0
 
+                elif keysim == sdl2.SDLK_ESCAPE:
+                    if sim.view == GameID.VIEW_LOBBY:
+                        sim.enter_world()
+                    else:
+                        sim.exit_world()
+
                 # Add term to message
                 elif keysim == sdl2.SDLK_x and sim.view == GameID.VIEW_TERMS:
                     sim.view = GameID.VIEW_WORLD
@@ -344,8 +355,10 @@ class SDGLiveClient(SDGLiveClientBase):
                 mmot_xrel += event.motion.xrel * self.mouse_sensitivity
 
                 # NOTE: Relative mouse mode (having cursor trapped) enables raw mouse input,
-                # meaning you get 1000 (or whatever mouse polling freq. is) events per second,
-                # which can make the cursor movement seem laggy with 30-ish FPS (but 60 is OK)
+                # meaning you get 1000 (or whatever mouse polling freq. is) events per second
+                # Apparently, when coupled with repeated keydown events while holding down a key at 30-ish FPS,
+                # there may be too many events to process at a time, making the cursor movement lag for a while
+                # (but with 60 FPS, it seems fine)
 
         # Discretise mouse motion (for AI demos)
         if self.discretise_mouse:
