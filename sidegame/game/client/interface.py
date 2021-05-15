@@ -1,6 +1,7 @@
 """Human UI version of the live client for SDG"""
 
 import os
+import ctypes
 import struct
 from argparse import Namespace
 from typing import Any, Callable, Tuple, Union
@@ -8,7 +9,7 @@ from typing import Any, Callable, Tuple, Union
 import numpy as np
 import cv2
 import sdl2
-import sdl2.ext as sdl2e
+import sdl2.ext
 
 from sidegame.networking.core import StridedFunction
 from sidegame.game.shared import GameID, Map, Item, Player
@@ -25,7 +26,7 @@ class SDGLiveClient(SDGLiveClientBase):
     while a background thread feeds sound chunks into `pyaudio.Stream`.
     """
 
-    WINDOW_NAME = 'SiDeGame v2021-05-08'
+    WINDOW_NAME = 'SiDeGame v2021-05-15'
     RENDER_SIZE = (256, 144)
 
     # Tracked mouse/keyboard state indices
@@ -41,7 +42,7 @@ class SDGLiveClient(SDGLiveClientBase):
     ALPHA = 255 * np.ones((*RENDER_SIZE[::-1], 1), dtype=np.uint8)
 
     def __init__(self, args: Namespace):
-        sdl2e.init()
+        sdl2.ext.init()
 
         super().__init__(args)
         self.sim.audio_system.start()
@@ -50,9 +51,9 @@ class SDGLiveClient(SDGLiveClientBase):
         self.space_time = 0.
 
         self.window_size = (round(self.RENDER_SIZE[0]*args.render_scale), round(self.RENDER_SIZE[1]*args.render_scale))
-        self.window = sdl2e.Window(self.WINDOW_NAME, size=self.window_size)
+        self.window = sdl2.ext.Window(self.WINDOW_NAME, size=self.window_size)
         self.window.show()
-        self.window_array = sdl2e.pixels3d(sdl2.SDL_GetWindowSurface(self.window.window).contents)
+        self.window_array = sdl2.ext.pixels3d(sdl2.SDL_GetWindowSurface(self.window.window).contents)
 
         sdl2.SDL_SetRelativeMouseMode(sdl2.SDL_TRUE)
         self.cursor_trapped = True
@@ -67,6 +68,17 @@ class SDGLiveClient(SDGLiveClientBase):
         self.strided_refresh: Callable = StridedFunction(self.refresh_display, args.tick_rate / args.refresh_rate)
 
     def poll_user_input(self, timestamp: float) -> Tuple[Any, Union[Any, None]]:
+        """
+        Poll or read peripheral events and interpret them as user input
+        and optional local log data.
+
+        NOTE: `pysdl2` intends for events to be obtained with `sdl2.ext.get_events()`,
+        but there was an issue with events lagging in certain conditions,
+        which switching to `SDL_PollEvent` seems to fix. See:
+        https://discourse.urho3d.io/t/vsync-low-fps-input-lag-problem/733/2
+        https://github.com/marcusva/py-sdl2/blob/master/sdl2/ext/common.py#L76
+        """
+
         sim = self.sim
         session = self.session
 
@@ -82,9 +94,15 @@ class SDGLiveClient(SDGLiveClientBase):
         log = None
 
         # Evaluate peripheral events
-        events = sdl2e.get_events()
+        event = sdl2.events.SDL_Event()
+        event_ptr = ctypes.byref(event)
 
-        for event in events:
+        while True:
+            event_in_queue = sdl2.events.SDL_PollEvent(event_ptr, 1)
+
+            if not event_in_queue:
+                break
+
             event_type = event.type
 
             # Exit
@@ -353,12 +371,6 @@ class SDGLiveClient(SDGLiveClientBase):
             elif event_type == sdl2.SDL_MOUSEMOTION:
                 mmot_yrel += event.motion.yrel * self.mouse_sensitivity
                 mmot_xrel += event.motion.xrel * self.mouse_sensitivity
-
-                # NOTE: Relative mouse mode (having cursor trapped) enables raw mouse input,
-                # meaning you get 1000 (or whatever mouse polling freq. is) events per second
-                # Apparently, when coupled with repeated keydown events while holding down a key at 30-ish FPS,
-                # there may be too many events to process at a time, making the cursor movement lag for a while
-                # (but with 60 FPS, it seems fine)
 
         # Discretise mouse motion (for AI demos)
         if self.discretise_mouse:

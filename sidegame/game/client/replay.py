@@ -1,6 +1,7 @@
 """Interactive demo player for SDG"""
 
 import os
+import ctypes
 import struct
 import random
 from argparse import Namespace
@@ -10,7 +11,7 @@ from threading import Lock
 import numpy as np
 import cv2
 import sdl2
-import sdl2.ext as sdl2e
+import sdl2.ext
 
 from sidegame.networking import Entry, Action, StridedFunction, ReplayClient
 from sidegame.game.shared import GameID, Session
@@ -91,12 +92,12 @@ class SDGReplayClient(ReplayClient):
             self.strided_refresh = None
 
         else:
-            sdl2e.init()
+            sdl2.ext.init()
             self.sim.audio_system.start()
 
-            self.window = sdl2e.Window(SDGLiveClient.WINDOW_NAME, size=self.window_size)
+            self.window = sdl2.ext.Window(SDGLiveClient.WINDOW_NAME, size=self.window_size)
             self.window.show()
-            self.window_array = sdl2e.pixels3d(sdl2.SDL_GetWindowSurface(self.window.window).contents)
+            self.window_array = sdl2.ext.pixels3d(sdl2.SDL_GetWindowSurface(self.window.window).contents)
 
             self.mouse_sensitivity = args.mouse_sensitivity / args.render_scale
 
@@ -274,9 +275,15 @@ class SDGReplayClient(ReplayClient):
         mmot_xrel = 0
 
         # Evaluate peripheral events
-        events = sdl2e.get_events()
+        event = sdl2.events.SDL_Event()
+        event_ptr = ctypes.byref(event)
 
-        for event in events:
+        while True:
+            event_in_queue = sdl2.events.SDL_PollEvent(event_ptr, 1)
+
+            if not event_in_queue:
+                break
+
             event_type = event.type
 
             # Quit
