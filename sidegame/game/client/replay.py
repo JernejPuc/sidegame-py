@@ -278,12 +278,7 @@ class SDGReplayClient(ReplayClient):
         event = sdl2.events.SDL_Event()
         event_ptr = ctypes.byref(event)
 
-        while True:
-            event_in_queue = sdl2.events.SDL_PollEvent(event_ptr, 1)
-
-            if not event_in_queue:
-                break
-
+        while sdl2.events.SDL_PollEvent(event_ptr, 1):
             event_type = event.type
 
             # Quit
