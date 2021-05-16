@@ -379,7 +379,11 @@ class StatTracker:
 
             # Clutch flag
             if len(alive_ts) == 1 and alive_ts[0] == self.own_player.id and not self.temp_scores['kills_to_clutch']:
-                self.temp_scores['kills_to_clutch'] = alive_cts
+                self.temp_scores['kills_to_clutch'] = len(alive_cts)
+                self.tracked_scores['clutch_rounds'] += 1
+
+            elif len(alive_cts) == 1 and alive_cts[0] == self.own_player.id and not self.temp_scores['kills_to_clutch']:
+                self.temp_scores['kills_to_clutch'] = len(alive_ts)
                 self.tracked_scores['clutch_rounds'] += 1
 
             # Opening

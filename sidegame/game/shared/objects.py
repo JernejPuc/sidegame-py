@@ -285,7 +285,7 @@ class Flash(Object):
         and line of sight.
         """
 
-        if any(sdglib.trace_sight(self.owner.id, pos, self.pos, map_.height, map_.player_id, map_.zone)):
+        if any(sdglib.trace_sight(self.owner.id, pos, self.pos, map_.height, map_.player_id_null, map_.zone)):
             return 0.
 
         rel_position = self.pos - pos
