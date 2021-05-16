@@ -748,7 +748,7 @@ class C4(Object):
                 timestamp = last_action.timestamp
                 pos, focus, kit = last_action.data
 
-                focus = focus and np.linalg.norm(pos - self.pos) <= self.DEFUSE_DISTANCE_THRESHOLD
+                focus = focus and player.health and np.linalg.norm(pos - self.pos) <= self.DEFUSE_DISTANCE_THRESHOLD
 
                 if self.defused_by == player.id:
                     # Update defuse

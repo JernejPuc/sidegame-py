@@ -330,6 +330,15 @@ class SDGServer(Server):
                 elif event.type == Event.CTRL_MATCH_ENDED:
                     flag = Session.FLAG_END_MATCH
 
+                # TODO: Temporary fix to update clientside money display
+                elif event.type == Event.OBJECT_SPAWN and log.data[1] == GameID.LOG_BUY:
+                    queued_events.append(event)
+
+                    obj = event.data
+                    queued_events.append(Event(
+                        Event.OBJECT_ASSIGN,
+                        (obj.owner.id, obj.item.id, 0., 0, 0, 0, obj.owner.money, obj.item.price)))
+
                 else:
                     queued_events.append(event)
 

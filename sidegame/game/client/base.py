@@ -376,6 +376,7 @@ class SDGLiveClientBase(LiveClient):
                 reserve = int(event_data[3])
                 carrying = int(event_data[4])
                 money = int(event_data[5])
+                spending = int(event_data[6])
 
                 player = session.players[obj_owner_id]
                 player.money = money
@@ -386,10 +387,10 @@ class SDGLiveClientBase(LiveClient):
                     player.slots[full_item_slot] = \
                         Weapon(item, player, rng=player.rng) if item.slot in Item.WEAPON_SLOTS else Object(item, player)
 
-                elif not carrying:
+                elif not carrying and not spending:
                     player.slots[full_item_slot] = None
 
-                if player.slots[full_item_slot] is not None:
+                if player.slots[full_item_slot] is not None and carrying:
                     player.slots[full_item_slot].set_values(durability, magazine, reserve, carrying)
 
                 # SFX
@@ -515,7 +516,7 @@ class SDGLiveClientBase(LiveClient):
                 obj_id = int(event_data[0])
                 obj = session.objects[obj_id]
                 queue_sound(inventory.c4.sounds['beep_a'], observed_player, obj)
-                sim.add_effect(Colour(Colour.get_disk_indices(3), sim.COLOUR_RED, 0.1, obj.pos[1], obj.pos[0], 0.5))
+                sim.add_effect(Colour(Colour.get_disk_indices(3), sim.COLOUR_RED, 0.1, obj.pos[1], obj.pos[0], 0.4))
 
             elif event_id == Event.FX_C4_BEEP_DEFUSING and accept_experienced_fx:
                 obj_id = int(event_data[0])
@@ -523,9 +524,16 @@ class SDGLiveClientBase(LiveClient):
 
                 # NOTE: Universally different sound for `BEEP_DEFUSING` would make it impossible to bluff
                 # It's only meant to inform the defuser and their team, anyway (and spectators)
-                sound = inventory.c4.sounds['beep_a' if observed_player.team == GameID.GROUP_TEAM_T else 'beep_b']
+                if observed_player.team == GameID.GROUP_TEAM_T:
+                    sound = inventory.c4.sounds['beep_a']
+                    sim.add_effect(
+                        Colour(Colour.get_disk_indices(3), sim.COLOUR_RED, 0.1, obj.pos[1], obj.pos[0], 0.4))
+                else:
+                    sound = inventory.c4.sounds['beep_b']
+                    sim.add_effect(
+                        Colour(Colour.get_disk_indices(3), sim.COLOUR_WHITE, 0.1, obj.pos[1], obj.pos[0], 0.4))
+
                 queue_sound(sound, observed_player, obj)
-                sim.add_effect(Colour(Colour.get_disk_indices(3), sim.COLOUR_WHITE, 0.1, obj.pos[1], obj.pos[0], 0.5))
 
             elif event_id == Event.FX_BOUNCE and accept_experienced_fx:
                 obj_id = int(event_data[0])
