@@ -267,6 +267,11 @@ class SDGReplayClient(ReplayClient):
         self.audio_stream = self.sim.audio_system.external_buffer
         self.io_lock = self.sim.audio_system.external_buffer_io_lock
 
+    def resume(self):
+        with self.sim.audio_system._audio_channels_io_lock:
+            for channel in self.sim.audio_system._audio_channels:
+                channel.clear()
+
         if not self.headless:
             self.sim.audio_system.start()
 

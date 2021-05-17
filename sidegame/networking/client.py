@@ -763,6 +763,9 @@ class ReplayClient(ClientBase):
             if current_clock >= jump_timestamp:
                 break
 
+        # Re-enable effects
+        self.resume()
+
         return previous_clock
 
     def _shortstep(self, local_clock: float):
@@ -847,6 +850,10 @@ class ReplayClient(ClientBase):
     @abstractmethod
     def reinit(self):
         """Reinitialise local state."""
+
+    @abstractmethod
+    def resume(self):
+        """Re-enable real-time effects."""
 
     @abstractmethod
     def get_user_command(self, current_timestamp: float) -> Tuple[int, Union[float, None]]:

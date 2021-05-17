@@ -74,6 +74,7 @@ class Simulation:
         self.session = Session(rng=rng)
         self.own_player_id = own_player_id
         self.observed_player_id = own_player_id
+        self.observer_lock_time = 0.
 
         self.cursor_y, self.cursor_x = self.WORLD_FRAME_CENTRE
         self.wheel_y = 0
@@ -336,6 +337,10 @@ class Simulation:
 
     def eval_effects(self, dt: float):
         """Iterate over all active effects and step them, clearing those that expire."""
+
+        # Death "animation" buffer
+        if self.observer_lock_time:
+            self.observer_lock_time = max(0., self.observer_lock_time - dt)
 
         # Add ambient sound
         # NOTE: By interacting with audio channels before evaluating new effects,
@@ -982,10 +987,6 @@ class Simulation:
         specified direction.
         """
 
-        # Must be in world view
-        if self.view != GameID.VIEW_WORLD:
-            return
-
         own_player: Player = self.session.players.get(self.own_player_id, None)
 
         # If unable to infer player pools, return to lobby
@@ -995,6 +996,10 @@ class Simulation:
 
         # Must be spectator or dead
         if own_player.team != GameID.GROUP_SPECTATORS and own_player.health:
+            return
+
+        # Death "animation" buffer
+        if self.observer_lock_time:
             return
 
         # Limit observable pool

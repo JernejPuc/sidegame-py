@@ -694,6 +694,9 @@ class SDGLiveClientBase(LiveClient):
                     session.total_round_time,
                     [attacker_pos_id, GameID.TERM_KILL, player.position_id, GameID.TERM_STOP]))
 
+                if victim_id == sim.own_player_id:
+                    sim.observer_lock_time = 0.5
+
         # Update chat history with player message
         elif session.check_player_message_access(sim.own_player_id, event_entry.id):
             msg_time = event_data[8]

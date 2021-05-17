@@ -179,6 +179,9 @@ class PlanarAudioSystem:
     def start(self):
         """Start a streaming thread in the background."""
 
+        if self.streaming:
+            return
+
         self._audio = pyaudio.PyAudio()
         self._stream = self._audio.open(
             rate=self.SAMPLING_RATE,

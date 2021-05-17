@@ -354,14 +354,18 @@ class SDGLiveClient(SDGLiveClientBase):
             elif event_type == sdl2.SDL_MOUSEBUTTONUP:
                 if event.button.button == sdl2.SDL_BUTTON_LEFT:
                     self.mkbd_state[self.MKBD_IDX_LBTN] = 0
-                    sim.change_observed_player(rotate_upward=False)
 
-                    if sim.view == GameID.VIEW_MAPSTATS:
+                    if sim.view == GameID.VIEW_WORLD:
+                        sim.change_observed_player(rotate_upward=False)
+
+                    elif sim.view == GameID.VIEW_MAPSTATS:
                         log = sim.create_log(GameID.EVAL_MSG_MARK)
 
                 elif event.button.button == sdl2.SDL_BUTTON_RIGHT:
                     self.mkbd_state[self.MKBD_IDX_RBTN] = 0
-                    sim.change_observed_player(rotate_upward=True)
+
+                    if sim.view == GameID.VIEW_WORLD:
+                        sim.change_observed_player(rotate_upward=True)
 
             elif event_type == sdl2.SDL_MOUSEMOTION:
                 mmot_yrel += event.motion.yrel * self.mouse_sensitivity
