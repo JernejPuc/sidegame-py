@@ -534,7 +534,7 @@ class Player(Entity, PlayerEntity):
             # Single event means no clip, multiple means at least one attack
             if recoil and len(events) > 1:
                 self.d_pos_recoil[1] += self.held_object.item.use_pos_offset
-                self.d_angle_recoil += (self.rng.random()-0.5) * self.held_object.item.use_angle_var
+                self.d_angle_recoil += self.rng.normal(0., self.held_object.item.use_angle_std)
 
         # Slash with knife
         elif self.held_object.item.slot == Item.SLOT_KNIFE:
@@ -542,7 +542,7 @@ class Player(Entity, PlayerEntity):
 
             if recoil:
                 self.d_pos_recoil[1] += self.held_object.item.use_pos_offset
-                self.d_angle_recoil += (self.rng.random()-0.5) * self.held_object.item.use_angle_var
+                self.d_angle_recoil += self.rng.normal(0., self.held_object.item.use_angle_std)
 
         # Throw grenade
         elif self.held_object.item.slot == Item.SLOT_UTILITY:
@@ -560,7 +560,7 @@ class Player(Entity, PlayerEntity):
 
             if recoil:
                 self.d_pos_recoil[1] += self.held_object.item.use_pos_offset
-                self.d_angle_recoil += (self.rng.random()-0.5) * self.held_object.item.use_angle_var
+                self.d_angle_recoil += self.rng.normal(0., self.held_object.item.use_angle_std)
 
         # Other
         else:
