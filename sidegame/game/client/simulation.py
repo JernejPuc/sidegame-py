@@ -212,16 +212,16 @@ class Simulation:
         self.colours: Dict[int, np.ndarray] = {
             'dead': np.array([0, 0, 0], dtype=np.uint8),
             'self': np.array([255, 255, 255], dtype=np.uint8),
-            GameID.PLAYER_T1: np.array([160, 64, 160], dtype=np.uint8),
+            GameID.PLAYER_T1: np.array([0, 248, 160], dtype=np.uint8),
             GameID.PLAYER_T2: np.array([16, 192, 255], dtype=np.uint8),
-            GameID.PLAYER_T3: np.array([160, 96, 255], dtype=np.uint8),
-            GameID.PLAYER_T4: np.array([32, 32, 160], dtype=np.uint8),
-            GameID.PLAYER_T5: np.array([96, 128, 160], dtype=np.uint8),
-            GameID.PLAYER_CT1: np.array([32, 224, 192], dtype=np.uint8),
-            GameID.PLAYER_CT2: np.array([224, 192, 32], dtype=np.uint8),
-            GameID.PLAYER_CT3: np.array([32, 224, 16], dtype=np.uint8),
-            GameID.PLAYER_CT4: np.array([224, 96, 96], dtype=np.uint8),
-            GameID.PLAYER_CT5: np.array([224, 196, 160], dtype=np.uint8)}
+            GameID.PLAYER_T3: np.array([96, 72, 255], dtype=np.uint8),
+            GameID.PLAYER_T4: np.array([224, 96, 160], dtype=np.uint8),
+            GameID.PLAYER_T5: np.array([224, 224, 0], dtype=np.uint8),
+            GameID.PLAYER_CT1: np.array([0, 248, 160], dtype=np.uint8),
+            GameID.PLAYER_CT2: np.array([16, 192, 255], dtype=np.uint8),
+            GameID.PLAYER_CT3: np.array([96, 72, 255], dtype=np.uint8),
+            GameID.PLAYER_CT4: np.array([224, 96, 160], dtype=np.uint8),
+            GameID.PLAYER_CT5: np.array([224, 224, 0], dtype=np.uint8)}
 
         # Team and angle specific sprites
         self.sprites: Dict[Tuple[int, int], np.ndarray] = {}
@@ -722,7 +722,7 @@ class Simulation:
                 sprite = self.sprites[a_player.team, -1]
 
                 draw_colour(
-                    world, self.SPRITE_AURA_INDICES, self.colours[a_player.position_id], opacity=0.5,
+                    world, self.SPRITE_AURA_INDICES, self.colours[a_player.position_id], opacity=0.625,
                     pos_y=pos_y, pos_x=pos_x, bounds=self.WORLD_BOUNDS)
                 draw_image(world, sprite, pos_y, pos_x, bounds=self.WORLD_BOUNDS)
 
@@ -753,7 +753,7 @@ class Simulation:
 
                 draw_image(world, sprite, pos_y, pos_x, bounds=self.WORLD_BOUNDS)
                 draw_colour(
-                    world, self.SPRITE_CAP_INDICES, self.colours[a_player.position_id], opacity=0.625,
+                    world, self.SPRITE_CAP_INDICES, self.colours[a_player.position_id], opacity=0.75,
                     pos_y=pos_y, pos_x=pos_x, bounds=self.WORLD_BOUNDS)
 
         # Draw transient objects (with finite lifetime)
