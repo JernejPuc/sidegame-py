@@ -1,5 +1,6 @@
 """Interactive demo player for SDG"""
 
+from collections import deque
 import os
 import ctypes
 import struct
@@ -14,7 +15,7 @@ import sdl2
 import sdl2.ext
 
 from sidegame.networking import Entry, Action, StridedFunction, ReplayClient
-from sidegame.game.shared import GameID, Session
+from sidegame.game.shared import GameID, Map, Session
 from sidegame.game.client.interface import SDGLiveClient
 from sidegame.game.client.simulation import Simulation
 from sidegame.game.client.tracking import DATA_DIR, StatTracker
@@ -69,6 +70,7 @@ class SDGReplayClient(ReplayClient):
         self.space_time = 0.
         self.speedup_idx = 3
         self.paused = False
+        self.max_tick_counter = self.recorder.split_meta(self.recorder.buffer[-1])[0][1]
 
         self.sim = Simulation(args.tick_rate, args.volume, self.own_entity_id, rng=self.rng)
         self.session: Session = self.sim.session
@@ -77,8 +79,9 @@ class SDGReplayClient(ReplayClient):
         # Expose observations for external access
         self.headless = headless
 
-        self.last_frame: np.ndarray = None
+        self.video_stream: Deque[np.ndarray] = deque()
         self.audio_stream: Deque[np.ndarray] = self.sim.audio_system.external_buffer
+        self.action_stream: Deque[Tuple[int, float]] = deque()
         self.io_lock: Lock = self.sim.audio_system.external_buffer_io_lock
 
         self.window_size = (
@@ -133,13 +136,18 @@ class SDGReplayClient(ReplayClient):
         # Update externally accessible image and audio buffer
         if self.headless:
             with self.io_lock:
-                self.last_frame = frame if self.init_args.render_scale == 1 else \
-                    cv2.resize(frame, self.window_size, interpolation=cv2.INTER_NEAREST)
+                self.video_stream.append(
+                    frame if self.init_args.render_scale == 1 else
+                    cv2.resize(frame, self.window_size, interpolation=cv2.INTER_NEAREST))
 
             self.sim.audio_system.step()
 
         # Upscale directly to window array memory and redraw
         else:
+            # Add progress info
+            width = round(self._tick_counter / self.max_tick_counter * 256)
+            frame[-1, :width, 1] = 127
+
             frame = np.concatenate((frame, SDGLiveClient.ALPHA), axis=-1)
             cv2.resize(frame, self.window_size, dst=self.window_array.base, interpolation=cv2.INTER_NEAREST)
             self.window.refresh()
@@ -191,6 +199,9 @@ class SDGReplayClient(ReplayClient):
         action_data = packet[4:]
 
         if action_type == Action.TYPE_STATE:
+            if self.headless:
+                self.action_stream.append(action_data)
+
             lclick_status = action_data[0]
             space_status = action_data[2]
             cursor_x = action_data[7]
@@ -200,6 +211,15 @@ class SDGReplayClient(ReplayClient):
             hovered_entity_id = action_data[14]
 
             if not self.session.is_spectator(self.sim.own_player_id):
+                # If dead, follow the originally observed player
+                if self.session.is_dead_player(self.sim.own_player_id) and view != GameID.VIEW_LOBBY:
+                    if self.sim.view == GameID.VIEW_WORLD and hovered_entity_id != Map.PLAYER_ID_NULL:
+                        self.sim.observed_player_id = hovered_entity_id
+
+                # When returning to life, switch back to own player
+                elif self.sim.observed_player_id != self.sim.own_player_id:
+                    self.sim.observed_player_id = self.sim.own_player_id
+
                 # With the exception of `VIEW_LOBBY`, other views should be strictly followed on player replays
                 if view != GameID.VIEW_LOBBY:
                     if self.sim.view != GameID.VIEW_WORLD and view == GameID.VIEW_WORLD:
@@ -217,37 +237,28 @@ class SDGReplayClient(ReplayClient):
                     if view == GameID.VIEW_MAPSTATS and self.last_lclick_status and not lclick_status:
                         self.sim.create_log(GameID.EVAL_MSG_MARK)
 
-                # If dead, follow the originally observed player
-                if self.session.is_dead_player(self.sim.own_player_id):
-                    if view != GameID.VIEW_LOBBY and self.sim.view == GameID.VIEW_WORLD:
-                        self.sim.observed_player_id = hovered_entity_id
+                    # Follow cursor
+                    self.sim.cursor_x = cursor_x
 
-                # When returning to life, switch back to own player
-                elif self.sim.observed_player_id != self.sim.own_player_id:
-                    self.sim.observed_player_id = self.sim.own_player_id
+                    # Follow chat scroll
+                    if wheel_y < 0:
+                        self.sim.wheel_y = max(self.sim.wheel_y-1, 0)
+                    elif wheel_y > 0:
+                        self.sim.wheel_y = min(self.sim.wheel_y+1, max(len(self.sim.chat)-5, 0))
 
-                # Follow cursor
-                self.sim.cursor_x = cursor_x
+                    # Follow send/clear
+                    if self.last_space_status and not space_status:
+                        self.sim.create_log(GameID.EVAL_MSG_SEND)
+                        self.space_time = 0.
+
+                    elif space_status:
+                        if self.last_space_status:
+                            if self.sim.message_draft and (timestamp - self.space_time) > 0.5:
+                                self.sim.clear_message_draft()
+                        else:
+                            self.space_time = timestamp
+
                 self.sim.cursor_y = cursor_y
-
-                # Follow chat scroll
-                if wheel_y < 0:
-                    self.sim.wheel_y = max(wheel_y-1, 0)
-                elif wheel_y > 0:
-                    self.sim.wheel_y = min(wheel_y+1, max(len(self.sim.chat)-5, 0))
-
-                # Follow send/clear
-                if self.last_space_status and not space_status:
-                    self.sim.create_log(GameID.EVAL_MSG_SEND)
-                    self.space_time = 0.
-
-                elif space_status:
-                    if self.last_space_status:
-                        if self.sim.message_draft and (timestamp - self.space_time) > 0.5:
-                            self.sim.clear_message_draft()
-                    else:
-                        self.space_time = timestamp
-
                 self.last_lclick_status = lclick_status
                 self.last_space_status = space_status
 
@@ -267,7 +278,10 @@ class SDGReplayClient(ReplayClient):
         self.audio_stream = self.sim.audio_system.external_buffer
         self.io_lock = self.sim.audio_system.external_buffer_io_lock
 
-    def resume(self):
+    def pause_effects(self):
+        self.sim.audio_system.paused = True
+
+    def resume_effects(self):
         with self.sim.audio_system._audio_channels_io_lock:
             for channel in self.sim.audio_system._audio_channels:
                 channel.clear()

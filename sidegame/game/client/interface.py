@@ -26,7 +26,7 @@ class SDGLiveClient(SDGLiveClientBase):
     while a background thread feeds sound chunks into `pyaudio.Stream`.
     """
 
-    WINDOW_NAME = 'SiDeGame v2021-05-15'
+    WINDOW_NAME = 'SiDeGame v2021-05-19'
     RENDER_SIZE = (256, 144)
 
     # Tracked mouse/keyboard state indices
@@ -337,7 +337,7 @@ class SDGLiveClient(SDGLiveClientBase):
                     sim.view = GameID.VIEW_WORLD
 
             # Update scroll position, enforcing valid range
-            elif event_type == sdl2.SDL_MOUSEWHEEL:
+            elif event_type == sdl2.SDL_MOUSEWHEEL and sim.view != GameID.VIEW_LOBBY:
                 if event.wheel.y > 0:
                     sim.wheel_y = max(sim.wheel_y-1, 0)
                     mwhl_y -= 1

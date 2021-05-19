@@ -741,6 +741,9 @@ class ReplayClient(ClientBase):
             self._reinit()
             self.reinit()
 
+        else:
+            self.pause_effects()
+
         # Step until reaching jump timestamp
         previous_clock: float = None
 
@@ -764,7 +767,7 @@ class ReplayClient(ClientBase):
                 break
 
         # Re-enable effects
-        self.resume()
+        self.resume_effects()
 
         return previous_clock
 
@@ -852,7 +855,11 @@ class ReplayClient(ClientBase):
         """Reinitialise local state."""
 
     @abstractmethod
-    def resume(self):
+    def pause_effects(self):
+        """(Temporarily) disable real-time effects."""
+
+    @abstractmethod
+    def resume_effects(self):
         """Re-enable real-time effects."""
 
     @abstractmethod

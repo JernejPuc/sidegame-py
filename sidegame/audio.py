@@ -159,6 +159,7 @@ class PlanarAudioSystem:
         self._stream: pyaudio.Stream = None
         self._player: threading.Thread = None
         self.streaming = False
+        self.paused = False
 
         self._audio_channels: List[Deque[OrientedSound]] = [deque() for _ in range(max_n_sounds)]
         self._audio_channels_io_lock = threading.Lock()
@@ -180,6 +181,9 @@ class PlanarAudioSystem:
         """Start a streaming thread in the background."""
 
         if self.streaming:
+            if self.paused:
+                self.paused = False
+
             return
 
         self._audio = pyaudio.PyAudio()
@@ -198,7 +202,10 @@ class PlanarAudioSystem:
         self.streaming = True
 
         while self.streaming:
-            self.step()
+            if not self.paused:
+                self.step()
+            else:
+                sleep(1e-3)
 
     def stop(self):
         """Stop the streaming thread and clean up after it."""
@@ -397,7 +404,8 @@ def spectrify(
     sampling_rate: int = 44100,
     n_fft: int = 2048,
     n_mel: int = 64,
-    eps: float = 1e-30
+    eps: float = 1e-12,
+    ref: float = None
 ) -> np.ndarray:
     """
     Convert a stereo (2-channel) sound array into a pair of spectral vectors,
@@ -418,7 +426,10 @@ def spectrify(
     signal = window * sound / 2**15
 
     power_spectrum = np.power(np.abs(np.fft.rfft(signal, n_fft, axis=1)), 2)
-    power_spectrum_mel = np.dot(mel_basis, power_spectrum.T)
-    power_spectrum_db = 10.*np.log10(power_spectrum_mel + eps)
+    power_spectrum = np.dot(mel_basis, power_spectrum.T)
+    power_spectrum = 10.*np.log10(np.maximum(power_spectrum, eps))
 
-    return power_spectrum_db.T
+    if ref is not None:
+        power_spectrum = np.maximum(power_spectrum - 10.*np.log10(ref), 10.*np.log10(eps))
+
+    return power_spectrum.T
