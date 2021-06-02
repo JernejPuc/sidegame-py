@@ -8,6 +8,9 @@ with open(os.path.join(os.path.dirname(__file__), 'README.md'), 'r') as readme_f
 with open(os.path.join(os.path.dirname(__file__), 'requirements.txt'), 'r') as req_file:
     requirements = req_file.read().splitlines()
 
+with open(os.path.join(os.path.dirname(__file__), 'requirements-ai.txt'), 'r') as req_file:
+    requirements_ai = req_file.read().splitlines()
+
 setup(
     name='sidegame',
     version='0.1.0.dev1',
@@ -16,7 +19,7 @@ setup(
     long_description_content_type='text/markdown',
     url='https://github.com/JernejPuc/sidegame-py',
     author='Jernej Puc',
-    author_email='placeholder@placeholder.com',
+    author_email='nejc.puc@gmail.com',
     license='MPL 2.0',
     classifiers=[
         'License :: OSI Approved :: Mozilla Public License 2.0 (MPL 2.0)',
@@ -34,8 +37,9 @@ setup(
         'Programming Language :: Python :: 3.9'
     ],
     platforms=['Windows', 'Linux'],
-    packages=['sidegame'],
+    packages=['sidegame', 'sdgai'],
     python_requires='~=3.7',
     install_requires=requirements,
+    extras_require={'AI': requirements_ai},
     zip_safe=False
 )

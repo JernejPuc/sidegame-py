@@ -129,5 +129,74 @@
         "admin_key": "00000000",
         "player_key": "11111111",
         "spectator_key": "22222222"
+    },
+
+    "ActorDefault": {
+        "address": "localhost",
+        "port": 49152,
+
+        "record": false,
+        "logging_level": 10,
+        "track_stats": false,
+        "show_fps": true,
+        "seed": null,
+
+        "volume": 1.0,
+        "interp_ratio": 2.0,
+
+        "role_key": "11111111",
+        "name": "trai",
+        "mmr": 0.0,
+
+        "device": "cpu",
+        "sample": false,
+        "space_bar": 0.8,
+        "e_bar": 0.625
+    },
+
+    "ActorDev": {
+        "address": "localhost",
+        "port": 49152,
+
+        "record": false,
+        "logging_level": 10,
+        "track_stats": false,
+        "show_fps": true,
+        "seed": null,
+
+        "volume": 1.0,
+        "interp_ratio": 2.0,
+
+        "role_key": "11111111",
+        "name": "trai",
+        "mmr": 0.0,
+
+        "device": "cpu",
+        "sample": true,
+        "space_bar": 0.8,
+        "e_bar": 0.625
+    },
+
+    "ActorRL": {
+        "address": "localhost",
+        "port": 49152,
+
+        "record": true,
+        "logging_level": 10,
+        "track_stats": true,
+        "show_fps": true,
+        "seed": 42,
+
+        "volume": 1.0,
+        "interp_ratio": 2.0,
+
+        "role_key": "11111111",
+        "name": "rlai",
+        "mmr": 1000.0,
+
+        "device": "cuda",
+        "sample": true,
+        "space_bar": 0.8,
+        "e_bar": 0.625
     }
 }
