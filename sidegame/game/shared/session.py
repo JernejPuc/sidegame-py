@@ -433,7 +433,10 @@ class Session:
         Returns `None` if no positions are free.
         """
 
-        player = self.players[player_id]
+        player = self.players.get(player_id, None)
+
+        if player is None:
+            return None
 
         # Get position id
         if position_id is None:
