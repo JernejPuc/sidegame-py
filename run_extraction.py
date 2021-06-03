@@ -1,52 +1,91 @@
-"""WIP script to extract observations from recorded SDG demos"""
+#!/usr/bin/env python
+
+"""Extract observations from recorded SDG demos."""
 
 import os
-import sys
+import argparse
+from logging import DEBUG
 from collections import deque
-from argparse import Namespace
 import numpy as np
 from sidegame.game.shared import GameID
 from sidegame.game.client import SDGReplayClient
 from sidegame.audio import get_mel_basis, spectrify
 
 
-sampling_rate = 44100
-tick_rate = 30.
-chunk_size = int(sampling_rate/tick_rate)
-hrir_size = 255
-n_fft = 2048
-n_mel = 64
-eps = 1e-12
+SAMPLING_RATE = 44100
+TICK_RATE = 30.
+CHUNK_SIZE = int(SAMPLING_RATE/TICK_RATE)
+HRIR_SIZE = 255
+N_FFT = 2048
+N_MEL = 64
+EPS = 1e-12
 
-mel_basis = get_mel_basis(sampling_rate=sampling_rate, n_fft=n_fft, n_mel=n_mel)
-window = np.hamming(chunk_size+hrir_size*2)[None, :]
-ref = np.power(window.sum(), 2) / 2.
+MEL_BASIS = get_mel_basis(sampling_rate=SAMPLING_RATE, n_fft=N_FFT, n_mel=N_MEL)
+WINDOW = np.hamming(CHUNK_SIZE+HRIR_SIZE*2)[None, :]
+REF = np.power(WINDOW.sum(), 2) / 2.
 
-n_delayed_frames = 6
-mouse_bins = np.array([0., 0.48, 1.19, 2.23, 3.78, 6.06, 9.44, 14.43, 21.82, 32.73, 48.87, 72.73, 108.])
+N_DELAYED_FRAMES = 6
+MOUSE_BINS = np.array([0., 0.48, 1.19, 2.23, 3.78, 6.06, 9.44, 14.43, 21.82, 32.73, 48.87, 72.73, 108.])
+
+
+def parse_args() -> argparse.Namespace:
+    """Parse extraction args."""
+
+    parser = argparse.ArgumentParser(description='Argument parser for data extraction from SDG demo files.')
+
+    parser.add_argument(
+        '-r', '--recording_path', type=str, required=True,
+        help='Path to an existing recording of network data exchanged with the server.')
+    parser.add_argument(
+        '-o', '--output_path', type=str, required=True,
+        help='Path to which the extracted data will be written.')
+    parser.add_argument(
+        '-k', '--sequence_key', type=int, required=True,
+        help='Unique key by which the sequence source of the data will be identified.')
+
+    parser.add_argument(
+        '--seed', type=int, default=42,
+        help='Seed for initialising random number generators.')
+    parser.add_argument(
+        '--frame_limit', type=int, default=1000000,
+        help='Maximum number of ticks/frames that can be processed per extraction.')
+    parser.add_argument(
+        '--sub_px_threshold', type=float, default=0.75,
+        help='RNG threshold to treat rounded 1px mouse movement as sub-1px instead.')
+
+    parser.add_argument(
+        '--logging_path', type=str, default=None,
+        help='If given, execution logs are written to a file at the specified location instead of stdout.')
+    parser.add_argument(
+        '--logging_level', type=int, default=DEBUG,
+        help='Threshold above the severity of which the runtime messages are logged or displayed.')
+    parser.add_argument(
+        '--show_fps', action='store_true',
+        help='Print tracked frames-per-second to stdout.')
+    parser.add_argument(
+        '--render_scale', type=float, default=1,
+        help='Factor by which the base render is upscaled. Determines the width and height of the window.')
+    parser.add_argument(
+        '--volume', type=float, default=1.,
+        help='Initial factor by which in-game sound amplitudes are scaled.')
+
+    return parser.parse_args()
 
 
 if __name__ == '__main__':
-    assert len(sys.argv) > 3, 'Not enough input arguments.'
+    args = parse_args()
 
-    recording_path = sys.argv[1]
-    output_path = sys.argv[2]
-    sequence_key = int(sys.argv[3])
-    frame_limit = int(sys.argv[4]) if len(sys.argv) > 4 else 1000000
-
-    assert os.path.exists(recording_path), 'No recording found on given path.'
-    assert not os.path.exists(output_path), 'Output file already exists.'
-
-    args = Namespace()
-    args.seed = 42
-    args.recording_path = recording_path
-    args.logging_path = None
-    args.logging_level = 10
-    args.show_fps = False
-    args.volume = 1.
-    args.render_scale = 1.
+    assert os.path.exists(args.recording_path), 'No recording found on given path.'
+    assert not os.path.exists(args.output_path), 'Output file already exists.'
 
     sdgr = SDGReplayClient(args, headless=True)
+    logger = sdgr.logger
+
+    frame_limit = args.frame_limit
+    output_path = args.output_path
+    sequence_key = args.sequence_key
+    sub_px_threshold = args.sub_px_threshold
+    rng = np.random.default_rng(seed=args.seed)
 
     frames = deque()
     spectra = deque()
@@ -62,8 +101,10 @@ if __name__ == '__main__':
         clk = sdgr.manual_step(clk)
 
         # Progress
-        perc = sdgr._tick_counter / sdgr.max_tick_counter * 100.
-        print(f'\rProcessing tick {sdgr._tick_counter} of {sdgr.max_tick_counter} ({perc:.2f}%)          ', end='')
+        last_tick_counter = sdgr._tick_counter - 1
+        perc = last_tick_counter / sdgr.max_tick_counter * 100.
+
+        print(f'\rProcessing tick {last_tick_counter} of {sdgr.max_tick_counter} ({perc:.2f}%)          ', end='')
 
         # Skip until match start
         if sdgr.sim.view == GameID.VIEW_LOBBY:
@@ -81,11 +122,18 @@ if __name__ == '__main__':
         xrel = d_angle if sdgr.sim.view == GameID.VIEW_WORLD else ((crsr_x - cursor_x[-1]) if cursor_x else 0.)
         yrel = (crsr_y - cursor_y[-1]) if cursor_y else 0.
 
-        xrel_idx = np.argmin(np.abs(np.abs(xrel) - mouse_bins))
-        yrel_idx = np.argmin(np.abs(np.abs(yrel) - mouse_bins))
+        # Bandaid for information loss due to rounding for int format
+        if abs(xrel) == 1 and rng.random() > sub_px_threshold:
+            xrel *= MOUSE_BINS[1]
 
-        mmot_xrel = mouse_bins[xrel_idx] * np.sign(xrel)
-        mmot_yrel = mouse_bins[yrel_idx] * np.sign(yrel)
+        if abs(yrel) == 1 and rng.random() > sub_px_threshold:
+            yrel *= MOUSE_BINS[1]
+
+        xrel_idx = np.argmin(np.abs(np.abs(xrel) - MOUSE_BINS))
+        yrel_idx = np.argmin(np.abs(np.abs(yrel) - MOUSE_BINS))
+
+        mmot_xrel = MOUSE_BINS[xrel_idx] * np.sign(xrel)
+        mmot_yrel = MOUSE_BINS[yrel_idx] * np.sign(yrel)
 
         wkey = int((ws1-1) > 0)
         skey = int((ws1-1) < 0)
@@ -100,8 +148,8 @@ if __name__ == '__main__':
         tab = int(sdgr.sim.view == GameID.VIEW_MAPSTATS)
 
         # Mouse motion to [-1, 1] range
-        mmot_xrel /= mouse_bins[-1]
-        mmot_yrel /= mouse_bins[-1]
+        mmot_xrel /= MOUSE_BINS[-1]
+        mmot_yrel /= MOUSE_BINS[-1]
 
         # Inferred action
         action = [lbtn, rbtn, space, ekey, gkey, rkey, dkey, akey, wkey, skey, tab, xkey, ckey, bkey]
@@ -111,10 +159,10 @@ if __name__ == '__main__':
         if kbd_num != 0:
             num_cats[kbd_num-1] = 1
 
-        mmot_xrel_cats = [0]*(2*len(mouse_bins)-1)
-        mmot_yrel_cats = [0]*(2*len(mouse_bins)-1)
-        mmot_xrel_cats[len(mouse_bins)-1 + int(xrel_idx * np.sign(xrel))] = 1
-        mmot_yrel_cats[len(mouse_bins)-1 + int(yrel_idx * np.sign(yrel))] = 1
+        mmot_xrel_cats = [0]*(2*len(MOUSE_BINS)-1)
+        mmot_yrel_cats = [0]*(2*len(MOUSE_BINS)-1)
+        mmot_xrel_cats[len(MOUSE_BINS)-1 + int(xrel_idx * np.sign(xrel))] = 1
+        mmot_yrel_cats[len(MOUSE_BINS)-1 + int(yrel_idx * np.sign(yrel))] = 1
 
         wheel_y_cats = [0]*3
         wheel_y_cats[int(mwhl_y1)] = 1
@@ -123,7 +171,7 @@ if __name__ == '__main__':
         actions.append(action)
 
         # Skip some observations to sync them with delayed actions
-        if frame_number < n_delayed_frames:
+        if frame_number < N_DELAYED_FRAMES:
             sdgr.video_stream.clear()
             sdgr.audio_stream.clear()
 
@@ -133,9 +181,16 @@ if __name__ == '__main__':
 
             # Audio to [0, 1] range
             spectral_vectors = spectrify(
-                sdgr.audio_stream.popleft(), mel_basis, window, sampling_rate, n_fft, n_mel, eps, ref)
+                sdgr.audio_stream.popleft(),
+                mel_basis=MEL_BASIS,
+                window=WINDOW,
+                sampling_rate=SAMPLING_RATE,
+                n_fft=N_FFT,
+                n_mel=N_MEL,
+                eps=EPS,
+                ref=REF)
 
-            spectral_vectors = spectral_vectors / (-10.*np.log10(eps)) + 1.
+            spectral_vectors = spectral_vectors / (-10.*np.log10(EPS)) + 1.
             spectra.append(spectral_vectors)
 
             # Unchanged cursor data
@@ -158,6 +213,8 @@ if __name__ == '__main__':
 
         frame_number += 1
 
+    print()
+
     # Drop incomplete IO pairs
     min_len = min(len(buffer) for buffer in (frames, spectra, cursor_y, cursor_x, mkbd_states, actions))
 
@@ -165,7 +222,7 @@ if __name__ == '__main__':
         while len(buffer) > min_len:
             buffer.pop()
 
-    print('\nGathering into arrays...')
+    logger.info('Gathering arrays...')
 
     # Convert to arrays
     frames = np.array(frames, dtype=np.float32)
@@ -178,7 +235,7 @@ if __name__ == '__main__':
     cursor = np.vstack((cursor_y, cursor_x)).T
     meta_key = np.array(sequence_key, ndmin=1, dtype=np.int32)
 
-    print('Compressing...')
+    logger.info('Compressing...')
 
     np.savez_compressed(
         output_path,
@@ -191,4 +248,4 @@ if __name__ == '__main__':
 
     sdgr.cleanup()
 
-    print('Done.\n')
+    logger.info('Done.')
