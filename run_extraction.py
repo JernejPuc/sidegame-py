@@ -7,6 +7,7 @@ import argparse
 from logging import DEBUG
 from collections import deque
 import numpy as np
+import h5py
 from sidegame.game.shared import GameID
 from sidegame.game.client import SDGReplayClient
 from sidegame.audio import get_mel_basis, spectrify
@@ -81,9 +82,10 @@ if __name__ == '__main__':
     sdgr = SDGReplayClient(args, headless=True)
     logger = sdgr.logger
 
-    frame_limit = args.frame_limit
+    input_path = args.recording_path
     output_path = args.output_path
     sequence_key = args.sequence_key
+    frame_limit = args.frame_limit
     sub_px_threshold = args.sub_px_threshold
     rng = np.random.default_rng(seed=args.seed)
 
@@ -227,24 +229,38 @@ if __name__ == '__main__':
     # Convert to arrays
     frames = np.array(frames, dtype=np.float32)
     spectra = np.array(spectra, dtype=np.float32)
+    mkbd_states = np.array(mkbd_states, dtype=np.float32)
     cursor_y = np.array(cursor_y, dtype=np.float32)
     cursor_x = np.array(cursor_x, dtype=np.float32)
-    mkbd_states = np.array(mkbd_states, dtype=np.float32)
     actions = np.array(actions, dtype=np.float32)
 
-    cursor = np.vstack((cursor_y, cursor_x)).T
-    meta_key = np.array(sequence_key, ndmin=1, dtype=np.int32)
+    # Reshape for batching and NCHW format
+    frames = np.moveaxis(frames, 3, 1)[:, None]
+    spectra = spectra[:, None]
+    mkbd_states = mkbd_states[:, None]
+    cursor_coords = np.vstack((cursor_y, cursor_x)).T[:, None]
+    actions = actions[:, None]
+
+    total_size = sum(arr.nbytes for arr in (frames, spectra, mkbd_states, cursor_coords, actions))
+
+    if total_size > 1e+9:
+        logger.debug('Uncompressed size: %.2fGB', total_size / 1024**3)
+
+    else:
+        logger.debug('Uncompressed size: %.0fMB', total_size / 1024**2)
 
     logger.info('Compressing...')
 
-    np.savez_compressed(
-        output_path,
-        image=frames,
-        spectrum=spectra,
-        mkbd=mkbd_states,
-        cursor=cursor,
-        action=actions,
-        meta=meta_key)
+    # NOTE: Chunks are built for fast access of temporal sub-sequences (indexing across the first/zeroth axis)
+    # instead of compression efficiency, i.e. size on disk
+    with h5py.File(output_path, 'w') as hf:
+        hf.create_dataset('image', data=frames, compression='gzip', compression_opts=4, chunks=(2, 1, 3, 144, 256))
+        hf.create_dataset('spectrum', data=spectra, compression='gzip', compression_opts=4, chunks=(12, 1, 2, 64))
+        hf.create_dataset('mkbd', data=mkbd_states, compression='gzip', compression_opts=4, chunks=(12, 1, 20))
+        hf.create_dataset('cursor', data=cursor_coords, compression='gzip', compression_opts=4, chunks=(12, 1, 2))
+        hf.create_dataset('action', data=actions, compression='gzip', compression_opts=4, chunks=(12, 1, 72))
+        hf.attrs['src'] = os.path.split(input_path)
+        hf.attrs['key'] = sequence_key
 
     sdgr.cleanup()
 

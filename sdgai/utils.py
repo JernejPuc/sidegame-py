@@ -3,6 +3,7 @@
 from collections import deque
 from typing import Deque, Hashable, Iterable, List, Tuple, Union
 import numpy as np
+import h5py
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -198,7 +199,12 @@ class SequenceIterator:
     samples in a temporal slice, all samples can eventually be in that place.
     """
 
-    def __init__(self, sequences: Tuple[np.ndarray], slice_length: int = 1, rng: np.random.Generator = None):
+    def __init__(
+        self,
+        sequences: Tuple[Union[np.ndarray, h5py.Dataset]],
+        slice_length: int = 1,
+        rng: np.random.Generator = None
+    ):
         self.sequences = sequences
         self.slice_length = slice_length
         self.rng: Union[np.random.Generator, None] = rng
@@ -248,7 +254,7 @@ class Dataset:
 
     def __init__(
         self,
-        npzs: Iterable[np.lib.npyio.NpzFile],
+        files: Iterable[h5py.File],
         truncated_length: int = 16,
         max_steps_with_repeat: int = 0,
         max_focal_offset: float = 10.,
@@ -268,20 +274,18 @@ class Dataset:
 
         self.sequences: List[SequenceIterator] = []
 
-        for npz in npzs:
+        for file in files:
             self.sequences.append(
                 SequenceIterator(
                     (
-                        np.moveaxis(npz['image'], 3, 1)[:, None],
-                        npz['spectrum'][:, None],
-                        npz['mkbd'][:, None],
-                        npz['cursor'][:, None],
-                        npz['action'][:, None],
-                        npz['meta'][:, None].repeat(len(npz['cursor']), axis=0)),
+                        file['image'],
+                        file['spectrum'],
+                        file['mkbd'],
+                        file['cursor'],
+                        file['action'],
+                        file.attrs['key'].repeat(len(file['cursor']))[:, None]),
                     slice_length=self.truncated_length,
                     rng=self.rng))
-
-            del npz
 
         self.batch_size = len(self.sequences) if max_batch_size is None else min(max_batch_size, len(self.sequences))
         self.seq_indices = np.arange(len(self.sequences))
