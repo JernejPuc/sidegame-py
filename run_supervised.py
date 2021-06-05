@@ -86,7 +86,7 @@ def parse_args() -> argparse.Namespace:
         '--batch_size', type=int, default=8,
         help='Number of different sequences processed simultaneously per each training node.')
     parser.add_argument(
-        '--truncated_length', type=int, default=24,
+        '--truncated_length', type=int, default=30,
         help='Length of the longest differentiable sequence in epochwise BPTT.')
     parser.add_argument(
         '--decimation', type=int, default=6,
@@ -94,16 +94,16 @@ def parse_args() -> argparse.Namespace:
         'If equal to truncated length, training regime becomes TBPTT with `k1 == k2`. '
         'If set to 1, a backward pass will be made on every step, retaining graph until the last step in the sequence.')
     parser.add_argument(
-        '--steps', type=int, default=int(2e+6),
+        '--steps', type=int, default=int(1e+5),
         help='Maximum number of steps within a training session.')
     parser.add_argument(
-        '--save_steps', type=int, default=500,
+        '--save_steps', type=int, default=250,
         help='Step interval for saving current model parameters.')
     parser.add_argument(
-        '--branch_steps', type=int, default=int(2e+4),
+        '--branch_steps', type=int, default=int(1e+4),
         help='Step interval for starting a new branch, i.e. path to save current model parameters.')
     parser.add_argument(
-        '--log_steps', type=int, default=100,
+        '--log_steps', type=int, default=50,
         help='Step interval for computing and logging the running loss.')
 
     parser.add_argument(
@@ -112,6 +112,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         '--device', type=str, default='cuda',
         help='Option to launch training on (potentially) multiple GPUs or as a single CPU process.')
+    parser.add_argument(
+        '--max_nprocs', type=int, default=4,
+        help='Limit the number of GPU devices that partake in training.')
 
     return parser.parse_args()
 
@@ -161,9 +164,10 @@ def run_imitation(
     device = torch.device(device)
 
     logger = get_logger('main' if is_main else f'aux:{rank}', path=args.logging_path, level=args.logging_level)
+    logger.propagate = False
 
     # Determine subset of available sequences
-    data_files = os.listdir(args.data_dir)
+    data_files = [filename for filename in os.listdir(args.data_dir) if filename.endswith('.h5')]
 
     if is_distributed:
         pool_idx = round(rank * (len(data_files) - args.pool_size) / (world_size - 1))
@@ -172,11 +176,9 @@ def run_imitation(
     else:
         file_slice = slice(len(data_files))
 
-    data_files = [
-        h5py.File(os.path.join(args.data_dir, filename), 'r')
-        for filename in data_files[file_slice] if filename.endswith('.h5')]
+    data_files = [h5py.File(os.path.join(args.data_dir, filename), 'r') for filename in data_files[file_slice]]
 
-    assert data_files, 'No data found in given directory.'
+    assert data_files, 'No data for file slice in given directory.'
 
     # Same seed for initialising model weights
     torch.manual_seed(args.seed)
@@ -193,15 +195,17 @@ def run_imitation(
     # Establish role within the process group
     if is_distributed:
         setup(rank, world_size)
-        model = DDP(model)
+        model = DDP(model, device_ids=[], output_device=device)
 
     # Confirm weights are consistent by logging a checksum for some parameters
-    sleep(0.1 * rank)
+    sleep(0.05 * rank)
 
     with torch.no_grad():
         checksum = (model.module if is_distributed else model).motor_decoding.action_fc.weight.sum().item()
 
     logger.debug('Weight checksum: %f', checksum)
+
+    sleep(0.05 * world_size)
 
     # Different seeds for sampling data
     dataset = Dataset(
@@ -213,10 +217,8 @@ def run_imitation(
         seed=(args.seed + rank),
         device=device)
 
-    init_focus = torch.ones((len(dataset.sequences), 2), dtype=torch.long, device=dataset.device)
-    init_focus[:, 0] = CENTRE_FOCUS_Y
-    init_focus[:, 1] = CENTRE_FOCUS_X
-    delayed_foci = deque(init_focus for _ in range(N_DELAY))
+    init_focus = torch.tensor([CENTRE_FOCUS_Y, CENTRE_FOCUS_X], dtype=torch.long, device=device)
+    delayed_foci = {seq.key: deque(init_focus for _ in range(N_DELAY)) for seq in dataset.sequences}
 
     k2 = dataset.truncated_length
     k1 = k2 // args.decimation
@@ -244,6 +246,8 @@ def run_imitation(
     running_train_loss = 0.
     last_train_loss = np.Inf
 
+    logger.debug('Training...')
+
     for i, data in enumerate(dataset, start=1):
         if termination_event.wait(0.):
             break
@@ -256,19 +260,18 @@ def run_imitation(
 
             print(
                 f'\rStep {effective_step} of {args.steps}. Last score: {last_train_loss:.4f}. ETA: ' +
-                str(timedelta(seconds=remaining_time)),
-                end='        ')
+                str(timedelta(seconds=remaining_time)) + '        ',
+                end='')
 
         # Handle reset/repeated sequences by setting initial states
         if dataset.reset_keys:
             (model.module if is_distributed else model).clear(keys=dataset.reset_keys)
-            cleared_focus_indices = list(dataset.reset_indices)
 
-            for focus in delayed_foci:
-                focus[cleared_focus_indices] = init_focus[cleared_focus_indices]
+            for key in dataset.reset_keys:
+                delayed_foci[key].clear()
+                delayed_foci[key].extend(init_focus for _ in range(N_DELAY))
 
             dataset.reset_keys.clear()
-            dataset.reset_indices.clear()
 
         # Reset accumulated gradients
         optimizer.zero_grad()
@@ -282,10 +285,15 @@ def run_imitation(
             demo_action = actions[j]
 
             # NOTE: Current focus and action respond to observations from `N_DELAY` steps ago, including past focus
-            delayed_foci.append(demo_focus)
+            key_list = keys[j].tolist()
+
+            for key in keys[j]:
+                delayed_foci[key].append(demo_focus[key_list.index(key)])
+
+            foci_j = torch.stack([delayed_foci[key].popleft() for key in keys[j]])
 
             # Model output
-            x_focus, x_action = model(images[j], spectra[j], mkbds[j], delayed_foci.popleft(), keys[j])
+            x_focus, x_action = model(images[j], spectra[j], mkbds[j], foci_j, keys[j])
 
             # Compute loss and accumulate gradients
             if not (j+1) % k1:
@@ -351,13 +359,16 @@ if __name__ == '__main__':
     root_logger = get_logger('root', path=args.logging_path, level=args.logging_level)
 
     if args.device == 'cuda' and torch.cuda.is_available():
-        nprocs = torch.cuda.device_count()
+        nprocs = min(torch.cuda.device_count(), args.max_nprocs)
 
     else:
         args.device = 'cpu'
         nprocs = 1
 
-    termination_event = mp.Event()
+    # NOTE: Explicit 'spawn' context to prevent unexpected segmentation fault
+    # See: https://discuss.pytorch.org/t/problems-with-torch-multiprocess-spawn-and-simplequeue/69674/2
+    tmp_ctx = mp.get_context('spawn')
+    termination_event = tmp_ctx.Event()
 
     root_logger.info('Launching...')
 

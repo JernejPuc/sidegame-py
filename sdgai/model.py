@@ -109,6 +109,7 @@ class FocusedVisualEncoding(nn.Module):
             x_stem,
             focal_points,
             length=self.CROP_LENGTH,
+            naive=True,
             batch_indices=self.batch_indices,
             length_indices=self.length_indices)
 
@@ -117,6 +118,7 @@ class FocusedVisualEncoding(nn.Module):
             x_visual,
             (focal_points / 8).to(torch.long),
             length=1,
+            naive=True,
             batch_indices=self.batch_indices,
             length_indices=self.single_index)
 

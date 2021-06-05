@@ -134,7 +134,7 @@ def prepare_inputs(
     mkbd_state: List[Union[int, float]],
     focal_point: Tuple[int, int],
     eps: float = 1e-12,
-    device: Union[torch.device, str] = None
+    device: torch.device = None
 ) -> Tuple[torch.Tensor]:
     """Adjust the range of inputs and convert them to tensors for model inference."""
 
@@ -143,10 +143,10 @@ def prepare_inputs(
     spectral_vectors = spectral_vectors / (-10.*np.log10(eps)) + 1.
 
     # Move channels to first axis, add batch axis, and convert to tensors on target device
-    x_visual = torch.Tensor(np.moveaxis(frame, 2, 0)[None], device=device)
-    x_audio = torch.Tensor(spectral_vectors[None], device=device)
-    x_mkbd = torch.Tensor(mkbd_state, device=device)[None]
-    x_focus = torch.LongTensor(focal_point, device=device)[None]
+    x_visual = torch.as_tensor(np.moveaxis(frame, 2, 0)[None], device=device)
+    x_audio = torch.as_tensor(spectral_vectors[None], device=device)
+    x_mkbd = torch.as_tensor(mkbd_state, device=device)[None]
+    x_focus = torch.as_tensor(focal_point, device=device)[None]
 
     return x_visual, x_audio, x_mkbd, x_focus
 
@@ -208,11 +208,13 @@ class SequenceIterator:
         self,
         sequences: Tuple[Union[np.ndarray, h5py.Dataset]],
         slice_length: int = 1,
-        rng: np.random.Generator = None
+        rng: np.random.Generator = None,
+        key: Hashable = None
     ):
         self.sequences = sequences
         self.slice_length = slice_length
         self.rng: Union[np.random.Generator, None] = rng
+        self.key = key
 
         self.slice_idx = 0
         self.slice_offset = 0
@@ -255,8 +257,6 @@ class Dataset:
     with the shortest sequence (lest batches change size).
     """
 
-    IDX_KEY = -1
-
     def __init__(
         self,
         files: Iterable[h5py.File],
@@ -266,7 +266,7 @@ class Dataset:
         max_batch_size: int = None,
         resume_step: int = 0,
         seed: int = None,
-        device: str = None
+        device: torch.device = None
     ):
         self.truncated_length = truncated_length
         self.max_steps_with_repeat = max_steps_with_repeat
@@ -277,7 +277,6 @@ class Dataset:
 
         self.steps: int = None
         self.reset_keys: Deque[Hashable] = deque()
-        self.reset_indices: Deque[int] = deque()
 
         self.sequences: List[SequenceIterator] = []
 
@@ -292,7 +291,8 @@ class Dataset:
                         file['action'],
                         file.attrs['key'].repeat(len(file['cursor']))[:, None]),
                     slice_length=self.truncated_length,
-                    rng=self.rng))
+                    rng=self.rng,
+                    key=file.attrs['key']))
 
         self.batch_size = len(self.sequences) if max_batch_size is None else min(max_batch_size, len(self.sequences))
         self.seq_indices = np.arange(len(self.sequences))
@@ -337,12 +337,13 @@ class Dataset:
 
         return (
             (
-                torch.Tensor(np.concatenate(images, axis=1), device=self.device),
-                torch.Tensor(np.concatenate(spectra, axis=1), device=self.device),
-                torch.Tensor(np.concatenate(mkbds, axis=1), device=self.device),
-                torch.LongTensor(self.get_focus_from_cursor(np.concatenate(cursors, axis=1)), device=self.device),
+                torch.as_tensor(np.concatenate(images, axis=1), device=self.device),
+                torch.as_tensor(np.concatenate(spectra, axis=1), device=self.device),
+                torch.as_tensor(np.concatenate(mkbds, axis=1), device=self.device),
+                torch.as_tensor(
+                    self.get_focus_from_cursor(np.concatenate(cursors, axis=1)), dtype=torch.long, device=self.device),
                 np.concatenate(keys, axis=1)),
-            torch.Tensor(np.concatenate(actions, axis=1), device=self.device))
+            torch.as_tensor(np.concatenate(actions, axis=1), device=self.device))
 
     def __next__(self):
         if self.max_steps_with_repeat and self.steps >= self.max_steps_with_repeat:
@@ -356,14 +357,12 @@ class Dataset:
                     self.seq_indices, size=self.batch_size, replace=False, shuffle=False))
 
         elif self.max_steps_with_repeat:
-            for idx, seq in enumerate(self.sequences):
+            for seq in self.sequences:
                 if not seq:
                     seq.reset()
 
                     # Allow states of reset sequences to be cleared externally
-                    key_array = seq.sequences[self.IDX_KEY]
-                    self.reset_keys.append(key_array[(0,)*len(key_array.shape)])
-                    self.reset_indices.append(idx)
+                    self.reset_keys.append(seq.key)
 
             self.steps += 1
 
