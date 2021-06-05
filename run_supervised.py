@@ -80,10 +80,10 @@ def parse_args() -> argparse.Namespace:
         help='Regularisation parameter for the AdamW optimiser.')
 
     parser.add_argument(
-        '--pool_size', type=int, default=24,
+        '--pool_size', type=int, default=15,
         help='Number of different sequences that a training node can sample from.')
     parser.add_argument(
-        '--batch_size', type=int, default=8,
+        '--batch_size', type=int, default=12,
         help='Number of different sequences processed simultaneously per each training node.')
     parser.add_argument(
         '--truncated_length', type=int, default=30,
@@ -239,7 +239,11 @@ def run_imitation(
         pct_start=args.pct_start,
         div_factor=(args.lr_max/args.lr_init),
         final_div_factor=(args.lr_init/args.lr_final),
-        last_epoch=(args.resume_step-1))
+        last_epoch=-1)
+
+    # See: https://discuss.pytorch.org/t/a-problem-occured-when-resuming-an-optimizer/28822/2
+    for _ in range(args.resume_step):
+        scheduler.step()
 
     start_time = perf_counter()
     model_branch = 0
@@ -332,7 +336,7 @@ def run_imitation(
 
         if is_main and not i % args.save_steps:
             (model.module if is_distributed else model).save(
-                os.path.join(args.model_dir, args.model_name + f'_v{model_branch:3d}.pth'))
+                os.path.join(args.model_dir, args.model_name + f'_v{model_branch:03d}.pth'))
 
     # Save final model parameters
     if is_main:
