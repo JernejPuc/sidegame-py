@@ -455,16 +455,13 @@ class PCNet(nn.Module):
 
         return self.to(device=device)
 
-    def load(self, path: str, device: str = None) -> 'PCNet':
+    def load(self, path: str, device: Union[str, torch.device] = None) -> 'PCNet':
         """Load model parameters from a state dict at the specified path."""
 
-        if device is not None:
-            device = torch.device(device)
-
-        self.load_state_dict(torch.load(path, map_location=device))
+        self.load_state_dict(torch.load(path, map_location=torch.device('cpu')))
 
         if device is not None:
-            return self.to(device=device)
+            return self.move(device)
 
         return self
 

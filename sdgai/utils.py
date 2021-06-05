@@ -165,10 +165,13 @@ def supervised_loss(
     focal_weight: float = 0.05
 ) -> torch.Tensor:
     """
-    Supervised loss function based on cross entropy (related to MLE and KL div),
-    averaged over the batch and constituent terms.
+    Supervised loss function based on cross entropy (related to MLE and KL div).
+    Different terms are summed together and then averaged across the batch.
 
-    Regularisation is omitted (handled by weight decay in the optimiser).
+    NOTE: Due to unreliable pseudo-labels for focal coordinates, the focal term
+    is assigned a smaller weight.
+
+    NOTE: Regularisation is omitted (handled by weight decay in the optimiser).
     """
 
     kbd_term = F.binary_cross_entropy_with_logits(x_action[:, :19], demo_action[:, :19], reduction='none')
@@ -177,15 +180,17 @@ def supervised_loss(
     mvmt_x_term = torch.sum(-F.log_softmax(x_action[:, 44:69], dim=1) * demo_action[:, 44:69], dim=1, keepdim=True)
     mwhl_y_term = torch.sum(-F.log_softmax(x_action[:, 69:72], dim=1) * demo_action[:, 69:72], dim=1, keepdim=True)
 
-    action_term = torch.mean(torch.cat((kbd_term, mvmt_y_term, mvmt_x_term, mwhl_y_term), dim=1))
-
     # To log of spatial distribution
     x_focus = -spatial_log_softmax(x_focus)
 
     # Probabilities at demo focal indices are implicitly 1. and otherwise 0.
-    focal_term = torch.mean(torch.cat([x_focus[i:i+1, 0, y, x] for i, (y, x) in enumerate(demo_focus)]))
+    focal_term = torch.cat([x_focus[i:i+1, 0, y, x] for i, (y, x) in enumerate(demo_focus)]) * focal_weight
+    focal_term = focal_term[:, None]
 
-    return action_term + focal_weight * focal_term
+    terms_per_sample = torch.cat((kbd_term, mvmt_y_term, mvmt_x_term, mwhl_y_term, focal_term), dim=1)
+    loss_per_sample = torch.sum(terms_per_sample, dim=1)
+
+    return torch.mean(loss_per_sample)
 
 
 class SequenceIterator:
@@ -259,6 +264,7 @@ class Dataset:
         max_steps_with_repeat: int = 0,
         max_focal_offset: float = 10.,
         max_batch_size: int = None,
+        resume_step: int = 0,
         seed: int = None,
         device: str = None
     ):
@@ -267,6 +273,7 @@ class Dataset:
         self.max_focal_offset = max_focal_offset
         self.rng: np.random.Generator = np.random.default_rng(seed=seed)
         self.device = device
+        self.resume_step = resume_step
 
         self.steps: int = None
         self.reset_keys: Deque[Hashable] = deque()
@@ -296,7 +303,7 @@ class Dataset:
         for seq in self.sequences:
             seq.reset()
 
-        self.steps = 0
+        self.steps = self.resume_step
 
     def __len__(self) -> int:
         return min(len(seq) for seq in self.sequences)
