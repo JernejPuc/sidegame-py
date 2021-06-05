@@ -259,7 +259,7 @@ if __name__ == '__main__':
         hf.create_dataset('mkbd', data=mkbd_states, compression='gzip', compression_opts=4, chunks=(12, 1, 20))
         hf.create_dataset('cursor', data=cursor_coords, compression='gzip', compression_opts=4, chunks=(12, 1, 2))
         hf.create_dataset('action', data=actions, compression='gzip', compression_opts=4, chunks=(12, 1, 72))
-        hf.attrs['src'] = os.path.split(input_path)
+        hf.attrs['src'] = os.path.split(input_path)[-1]
         hf.attrs['key'] = sequence_key
 
     sdgr.cleanup()
