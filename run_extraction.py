@@ -11,6 +11,7 @@ import h5py
 from sidegame.game.shared import GameID
 from sidegame.game.client import SDGReplayClient
 from sidegame.audio import get_mel_basis, spectrify
+from sidegame.graphics import get_camera_warp
 
 
 SAMPLING_RATE = 44100
@@ -27,6 +28,104 @@ REF = np.power(WINDOW.sum(), 2) / 2.
 
 N_DELAYED_FRAMES = 6
 MOUSE_BINS = np.array([0., 0.48, 1.19, 2.23, 3.78, 6.06, 9.44, 14.43, 21.82, 32.73, 48.87, 72.73, 108.])
+
+MAIN_HEIGHT = 108//2
+CHAT_WIDTH = 64//2
+FOCUS_HEIGHT = 144//2
+FOCUS_WIDTH = 256//2
+POS_X, POS_Y = np.meshgrid(np.arange(FOCUS_WIDTH), np.arange(FOCUS_HEIGHT))
+
+BASE_FOCUS = np.zeros((FOCUS_HEIGHT, FOCUS_WIDTH))
+CHAT_FOCUS = np.zeros((FOCUS_HEIGHT, FOCUS_WIDTH))
+HUD_FOCUS = np.zeros((FOCUS_HEIGHT, FOCUS_WIDTH))
+CHAT_FOCUS[:, :CHAT_WIDTH] = np.linspace(0., 1., FOCUS_HEIGHT)[:, None].repeat(CHAT_WIDTH, axis=1)
+HUD_FOCUS[MAIN_HEIGHT:, CHAT_WIDTH:] = 1.
+CHAT_FOCUS /= CHAT_FOCUS.sum()
+HUD_FOCUS /= HUD_FOCUS.sum()
+
+REDUCTION_NONE = 0
+REDUCTION_STD = 1
+REDUCTION_TRUNC = 2
+
+
+def gaussian(y: float, x: float, std: float = 1., reduction: int = REDUCTION_STD) -> np.ndarray:
+    """Generate a gaussian distribution around given coordinates."""
+
+    res = np.exp(-0.5 * ((x - POS_X)**2 + (y - POS_Y)**2)/std**2)
+
+    if reduction == REDUCTION_TRUNC:
+        res = np.where(res < 1e-3, 0., res)
+        res /= res.sum()
+
+    elif reduction == REDUCTION_STD:
+        res *= 1. / (std**2 * 2.*np.pi)
+
+    return res
+
+
+def get_focal_distribution(
+    sdgr: SDGReplayClient,
+    space_pressed: bool,
+    message_received: bool,
+    initial_frame: bool = False
+) -> np.ndarray:
+    """
+    Get suggested focal distribution based on view, cursor coordinates,
+    and entity positions.
+    """
+
+    # Get base highlights
+    if initial_frame:
+        focus = BASE_FOCUS
+
+    elif space_pressed or message_received:
+        focus = CHAT_FOCUS
+
+    elif sdgr.sim.view == GameID.VIEW_WORLD:
+        focus = HUD_FOCUS
+
+    elif sdgr.sim.view == GameID.VIEW_STORE:
+        focus = BASE_FOCUS
+
+    else:
+        focus = CHAT_FOCUS
+
+    # Get cursor highlight
+    std = 5. if sdgr.sim.view == GameID.VIEW_WORLD else 7.5
+    focus = focus + gaussian(sdgr.sim.cursor_y//2., sdgr.sim.cursor_x//2., std=std, reduction=REDUCTION_TRUNC)
+
+    if sdgr.sim.view != GameID.VIEW_WORLD or initial_frame:
+        return focus / focus.sum()
+
+    # Get entity highlights
+    player = sdgr.session.players[sdgr.sim.observed_player_id]
+    pos = tuple(player.pos)
+    origin = tuple(player.d_pos_recoil + sdgr.sim.WORLD_FRAME_ORIGIN)
+    angle = player.angle + np.pi/2. + player.d_angle_recoil
+    world_warp = get_camera_warp(pos, angle, origin)
+
+    ent_focus = BASE_FOCUS
+
+    for a_player in sdgr.session.players.values():
+        if sdgr.sim.check_los(player, a_player):
+            pos_x, pos_y = np.dot(world_warp, (*a_player.pos, 1.))
+
+            if 0. <= pos_y <= 107. and 0. <= pos_x <= 191.:
+                ent_focus = ent_focus + gaussian(pos_y//2., 32. + pos_x//2., std=1., reduction=REDUCTION_NONE)
+
+    for an_object in sdgr.session.objects.values():
+        if sdgr.sim.check_los(player, an_object):
+            pos_x, pos_y = np.dot(world_warp, (*an_object.pos, 1.))
+
+            if 0. <= pos_y <= 107. and 0. <= pos_x <= 191.:
+                ent_focus = ent_focus + gaussian(pos_y//2., 32. + pos_x//2., std=1., reduction=REDUCTION_NONE)
+
+    ent_focus_sum = ent_focus.sum()
+
+    if ent_focus_sum:
+        focus = focus + ent_focus / ent_focus_sum
+
+    return focus / focus.sum()
 
 
 def parse_args() -> argparse.Namespace:
@@ -91,13 +190,15 @@ if __name__ == '__main__':
 
     frames = deque()
     spectra = deque()
+    mkbd_states = deque()
+    foci = deque()
     cursor_y = deque()
     cursor_x = deque()
-    mkbd_states = deque()
     actions = deque()
 
     clk = None
     frame_number = 0
+    last_chat_lengths = deque(False for _ in range(N_DELAYED_FRAMES))
 
     while sdgr.recording and frame_number < frame_limit:
         clk = sdgr.manual_step(clk)
@@ -134,8 +235,9 @@ if __name__ == '__main__':
         xrel_idx = np.argmin(np.abs(np.abs(xrel) - MOUSE_BINS))
         yrel_idx = np.argmin(np.abs(np.abs(yrel) - MOUSE_BINS))
 
-        mmot_xrel = MOUSE_BINS[xrel_idx] * np.sign(xrel)
-        mmot_yrel = MOUSE_BINS[yrel_idx] * np.sign(yrel)
+        # Mouse motion to [-1, 1] range
+        mmot_xrel = np.log(MOUSE_BINS[xrel_idx] + 1.) / np.log(MOUSE_BINS[-1] + 1.) * np.sign(xrel)
+        mmot_yrel = np.log(MOUSE_BINS[yrel_idx] + 1.) / np.log(MOUSE_BINS[-1] + 1.) * np.sign(yrel)
 
         wkey = int((ws1-1) > 0)
         skey = int((ws1-1) < 0)
@@ -149,78 +251,76 @@ if __name__ == '__main__':
         ckey = int(sdgr.sim.view == GameID.VIEW_ITEMS)
         tab = int(sdgr.sim.view == GameID.VIEW_MAPSTATS)
 
-        # Mouse motion to [-1, 1] range
-        mmot_xrel /= MOUSE_BINS[-1]
-        mmot_yrel /= MOUSE_BINS[-1]
+        # Skip some actions to sync them with causing observations
+        if frame_number >= N_DELAYED_FRAMES:
+            action = [lbtn, rbtn, space, ekey, gkey, rkey, dkey, akey, wkey, skey, tab, xkey, ckey, bkey]
 
-        # Inferred action
-        action = [lbtn, rbtn, space, ekey, gkey, rkey, dkey, akey, wkey, skey, tab, xkey, ckey, bkey]
+            num_cats = [0]*5
 
-        num_cats = [0]*5
+            if kbd_num != 0:
+                num_cats[kbd_num-1] = 1
 
-        if kbd_num != 0:
-            num_cats[kbd_num-1] = 1
+            mmot_xrel_cats = [0]*(2*len(MOUSE_BINS)-1)
+            mmot_yrel_cats = [0]*(2*len(MOUSE_BINS)-1)
+            mmot_xrel_cats[len(MOUSE_BINS)-1 + int(xrel_idx * np.sign(xrel))] = 1
+            mmot_yrel_cats[len(MOUSE_BINS)-1 + int(yrel_idx * np.sign(yrel))] = 1
 
-        mmot_xrel_cats = [0]*(2*len(MOUSE_BINS)-1)
-        mmot_yrel_cats = [0]*(2*len(MOUSE_BINS)-1)
-        mmot_xrel_cats[len(MOUSE_BINS)-1 + int(xrel_idx * np.sign(xrel))] = 1
-        mmot_yrel_cats[len(MOUSE_BINS)-1 + int(yrel_idx * np.sign(yrel))] = 1
+            wheel_y_cats = [0]*3
+            wheel_y_cats[int(mwhl_y1)] = 1
 
-        wheel_y_cats = [0]*3
-        wheel_y_cats[int(mwhl_y1)] = 1
+            action = action + num_cats + mmot_yrel_cats + mmot_xrel_cats + wheel_y_cats
+            actions.append(action)
 
-        action = action + num_cats + mmot_yrel_cats + mmot_xrel_cats + wheel_y_cats
-        actions.append(action)
+            # Suggested focal distribution
+            focus = get_focal_distribution(
+                sdgr, bool(space), last_chat_lengths.popleft(), initial_frame=(frame_number < 2*N_DELAYED_FRAMES))
 
-        # Skip some observations to sync them with delayed actions
-        if frame_number < N_DELAYED_FRAMES:
-            sdgr.video_stream.clear()
-            sdgr.audio_stream.clear()
+            foci.append(focus)
+            last_chat_lengths.append(len(sdgr.sim.chat) > last_chat_lengths[-1])
 
-        else:
-            # Image to [0, 1] range
-            frames.append(sdgr.video_stream.popleft()[..., ::-1] / 255.)
+        # Image to [0, 1] range
+        frames.append(sdgr.video_stream.popleft()[..., ::-1] / 255.)
 
-            # Audio to [0, 1] range
-            spectral_vectors = spectrify(
-                sdgr.audio_stream.popleft(),
-                mel_basis=MEL_BASIS,
-                window=WINDOW,
-                sampling_rate=SAMPLING_RATE,
-                n_fft=N_FFT,
-                n_mel=N_MEL,
-                eps=EPS,
-                ref=REF)
+        # Audio to [0, 1] range
+        spectral_vectors = spectrify(
+            sdgr.audio_stream.popleft(),
+            mel_basis=MEL_BASIS,
+            window=WINDOW,
+            sampling_rate=SAMPLING_RATE,
+            n_fft=N_FFT,
+            n_mel=N_MEL,
+            eps=EPS,
+            ref=REF)
 
-            spectral_vectors = spectral_vectors / (-10.*np.log10(EPS)) + 1.
-            spectra.append(spectral_vectors)
+        spectral_vectors = spectral_vectors / (-10.*np.log10(EPS)) + 1.
+        spectra.append(spectral_vectors)
 
-            # Unchanged cursor data
-            cursor_y.append(sdgr.sim.cursor_y)
-            cursor_x.append(sdgr.sim.cursor_x)
+        # Unchanged cursor data
+        cursor_y.append(sdgr.sim.cursor_y)
+        cursor_x.append(sdgr.sim.cursor_x)
 
-            # Num key to [0, 1] range
-            kbd_num /= 5
+        # Num key to [0, 1] range
+        kbd_num /= 5
 
-            # Cursor coordinates to [-1, 1] range
-            crsr_y = (crsr_y - 53.5) / 51.5
-            crsr_x = (crsr_x - 64. - 95.5) / 93.5
+        # Cursor coordinates to [-1, 1] range
+        crsr_y = (crsr_y - 53.5) / 51.5
+        crsr_x = (crsr_x - 64. - 95.5) / 93.5
 
-            # Observed mouse/keyboard state
-            mkbd_state = [
-                    wkey, skey, dkey, akey, ekey, rkey, gkey, bkey, xkey, ckey, tab, space, lbtn, rbtn,
-                    kbd_num, wheel_y, mmot_yrel, mmot_xrel, crsr_y, crsr_x]
+        # Observed mouse/keyboard state
+        mkbd_state = [
+                wkey, skey, dkey, akey, ekey, rkey, gkey, bkey, xkey, ckey, tab, space, lbtn, rbtn,
+                kbd_num, wheel_y, mmot_yrel, mmot_xrel, crsr_y, crsr_x]
 
-            mkbd_states.append(mkbd_state)
+        mkbd_states.append(mkbd_state)
 
         frame_number += 1
 
     print()
 
     # Drop incomplete IO pairs
-    min_len = min(len(buffer) for buffer in (frames, spectra, cursor_y, cursor_x, mkbd_states, actions))
+    min_len = min(len(buffer) for buffer in (frames, spectra, mkbd_states, foci, cursor_y, cursor_x, actions))
 
-    for buffer in (frames, spectra, cursor_y, cursor_x, mkbd_states, actions):
+    for buffer in (frames, spectra, mkbd_states, foci, cursor_y, cursor_x, actions):
         while len(buffer) > min_len:
             buffer.pop()
 
@@ -230,18 +330,20 @@ if __name__ == '__main__':
     frames = np.array(frames, dtype=np.float32)
     spectra = np.array(spectra, dtype=np.float32)
     mkbd_states = np.array(mkbd_states, dtype=np.float32)
-    cursor_y = np.array(cursor_y, dtype=np.float32)
-    cursor_x = np.array(cursor_x, dtype=np.float32)
+    foci = np.array(foci, dtype=np.float32)
+    cursor_y = np.array(cursor_y, dtype=np.int32)
+    cursor_x = np.array(cursor_x, dtype=np.int32)
     actions = np.array(actions, dtype=np.float32)
 
     # Reshape for batching and NCHW format
     frames = np.moveaxis(frames, 3, 1)[:, None]
     spectra = spectra[:, None]
     mkbd_states = mkbd_states[:, None]
+    foci = foci[:, None]
     cursor_coords = np.vstack((cursor_y, cursor_x)).T[:, None]
     actions = actions[:, None]
 
-    total_size = sum(arr.nbytes for arr in (frames, spectra, mkbd_states, cursor_coords, actions))
+    total_size = sum(arr.nbytes for arr in (frames, spectra, mkbd_states, foci, cursor_coords, actions))
 
     if total_size > 1e+9:
         logger.debug('Uncompressed size: %.2fGB', total_size / 1024**3)
@@ -257,9 +359,11 @@ if __name__ == '__main__':
         hf.create_dataset('image', data=frames, compression='gzip', compression_opts=4, chunks=(2, 1, 3, 144, 256))
         hf.create_dataset('spectrum', data=spectra, compression='gzip', compression_opts=4, chunks=(12, 1, 2, 64))
         hf.create_dataset('mkbd', data=mkbd_states, compression='gzip', compression_opts=4, chunks=(12, 1, 20))
+        hf.create_dataset('focus', data=foci, compression='gzip', compression_opts=4, chunks=(6, 1, 72, 128))
         hf.create_dataset('cursor', data=cursor_coords, compression='gzip', compression_opts=4, chunks=(12, 1, 2))
         hf.create_dataset('action', data=actions, compression='gzip', compression_opts=4, chunks=(12, 1, 72))
         hf.attrs['src'] = os.path.split(input_path)[-1]
+        hf.attrs['len'] = len(frames)
         hf.attrs['key'] = sequence_key
 
     sdgr.cleanup()

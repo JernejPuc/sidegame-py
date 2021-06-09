@@ -143,10 +143,10 @@ def prepare_inputs(
     spectral_vectors = spectral_vectors / (-10.*np.log10(eps)) + 1.
 
     # Move channels to first axis, add batch axis, and convert to tensors on target device
-    x_visual = torch.as_tensor(np.moveaxis(frame, 2, 0)[None], device=device)
-    x_audio = torch.as_tensor(spectral_vectors[None], device=device)
-    x_mkbd = torch.as_tensor(mkbd_state, device=device)[None]
-    x_focus = torch.as_tensor(focal_point, device=device)[None]
+    x_visual = torch.as_tensor(np.moveaxis(frame, 2, 0)[None], dtype=torch.float, device=device)
+    x_audio = torch.as_tensor(spectral_vectors[None], dtype=torch.float, device=device)
+    x_mkbd = torch.as_tensor(mkbd_state, dtype=torch.float, device=device)[None]
+    x_focus = torch.as_tensor(focal_point, dtype=torch.long, device=device)[None]
 
     return x_visual, x_audio, x_mkbd, x_focus
 
@@ -257,12 +257,15 @@ class Dataset:
     with the shortest sequence (lest batches change size).
     """
 
+    FOCUS_HEIGHT = 72
+    FOCUS_WIDTH = 128
+    FOCUS_HOLD_PROBA = 0.8
+
     def __init__(
         self,
         files: Iterable[h5py.File],
         truncated_length: int = 16,
         max_steps_with_repeat: int = 0,
-        max_focal_offset: float = 10.,
         max_batch_size: int = None,
         resume_step: int = 0,
         seed: int = None,
@@ -270,13 +273,15 @@ class Dataset:
     ):
         self.truncated_length = truncated_length
         self.max_steps_with_repeat = max_steps_with_repeat
-        self.max_focal_offset = max_focal_offset
         self.rng: np.random.Generator = np.random.default_rng(seed=seed)
         self.device = device
         self.resume_step = resume_step
 
         self.steps: int = None
         self.reset_keys: Deque[Hashable] = deque()
+        self.focus_indices = [
+            np.unravel_index(idx, (self.FOCUS_HEIGHT, self.FOCUS_WIDTH))
+            for idx in range(self.FOCUS_HEIGHT * self.FOCUS_WIDTH)]
 
         self.sequences: List[SequenceIterator] = []
 
@@ -287,9 +292,9 @@ class Dataset:
                         file['image'],
                         file['spectrum'],
                         file['mkbd'],
-                        file['cursor'],
+                        file['focus'],
                         file['action'],
-                        file.attrs['key'].repeat(len(file['cursor']))[:, None]),
+                        file.attrs['key'].repeat(file.attrs['len'])[:, None]),
                     slice_length=self.truncated_length,
                     rng=self.rng,
                     key=file.attrs['key']))
@@ -303,7 +308,8 @@ class Dataset:
         for seq in self.sequences:
             seq.reset()
 
-        self.steps = self.resume_step
+        self.steps = 0
+        self.resume_next()
 
     def __len__(self) -> int:
         return min(len(seq) for seq in self.sequences)
@@ -312,17 +318,22 @@ class Dataset:
         self.reset()
         return self
 
-    def get_focus_from_cursor(self, cursor: np.ndarray) -> np.ndarray:
+    def sample_focus(self, focus: np.ndarray) -> np.ndarray:
         """
-        Get indices of focal points by adding small random offsets to
-        cursor coordinates.
+        Get indices of focal points by sampling from suggested probability
+        distributions. Sampled points can be held for a few consecutive frames.
         """
 
-        focus = (cursor + self.rng.uniform(-self.max_focal_offset, self.max_focal_offset, cursor.shape)) / 2.
-        focus[..., 0] = np.clip(focus[..., 0], 0., 71.)
-        focus[..., 1] = np.clip(focus[..., 1], 0., 127.)
+        # n, b, h, w -> n*b, h*w -> n*b, i -> n, b, i
+        focus = focus.reshape(self.truncated_length*self.batch_size, self.FOCUS_HEIGHT*self.FOCUS_WIDTH)
+        focus = np.array([self.rng.choice(self.focus_indices, p=focus_i) for focus_i in focus])
+        focus = focus.reshape((self.truncated_length, self.batch_size, 2))
 
-        return np.around(focus)
+        for n in range(1, self.truncated_length):
+            mask = self.rng.uniform(size=self.batch_size) > self.FOCUS_HOLD_PROBA
+            focus[n] = np.where(mask[:, None], focus[n], focus[n-1])
+
+        return focus
 
     def get_batch(
         self,
@@ -333,15 +344,14 @@ class Dataset:
         and an output.
         """
 
-        images, spectra, mkbds, cursors, actions, keys = zip(*concurrent_slices)
+        images, spectra, mkbds, foci, actions, keys = zip(*concurrent_slices)
 
         return (
             (
                 torch.as_tensor(np.concatenate(images, axis=1), device=self.device),
                 torch.as_tensor(np.concatenate(spectra, axis=1), device=self.device),
                 torch.as_tensor(np.concatenate(mkbds, axis=1), device=self.device),
-                torch.as_tensor(
-                    self.get_focus_from_cursor(np.concatenate(cursors, axis=1)), dtype=torch.long, device=self.device),
+                torch.as_tensor(self.sample_focus(np.concatenate(foci, axis=1)), dtype=torch.long, device=self.device),
                 np.concatenate(keys, axis=1)),
             torch.as_tensor(np.concatenate(actions, axis=1), device=self.device))
 
@@ -372,3 +382,44 @@ class Dataset:
 
         else:
             raise StopIteration
+
+    def resume_next(self):
+        """
+        Advance iteration until reaching the step to resume.
+        Calls to the random generator are replayed as well.
+        """
+
+        while self.steps < self.resume_step:
+            if self.max_steps_with_repeat and self.steps >= self.max_steps_with_repeat:
+                break
+
+            elif all(self.sequences):
+                self.steps += 1
+
+                _ = [
+                    next(self.sequences[seq_idx]) for seq_idx in self.rng.choice(
+                        self.seq_indices, size=self.batch_size, replace=False, shuffle=False)]
+
+                _ = [self.rng.choice(self.focus_indices) for _ in range(self.truncated_length * self.batch_size)]
+
+                for _ in range(1, self.truncated_length):
+                    _ = self.rng.uniform(size=self.batch_size)
+
+            elif self.max_steps_with_repeat:
+                for seq in self.sequences:
+                    if not seq:
+                        seq.reset()
+
+                self.steps += 1
+
+                _ = [
+                    next(self.sequences[seq_idx]) for seq_idx in self.rng.choice(
+                        self.seq_indices, size=self.batch_size, replace=False, shuffle=False)]
+
+                _ = [self.rng.choice(self.focus_indices) for _ in range(self.truncated_length * self.batch_size)]
+
+                for _ in range(1, self.truncated_length):
+                    _ = self.rng.uniform(size=self.batch_size)
+
+            else:
+                break

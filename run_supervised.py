@@ -58,16 +58,16 @@ def parse_args() -> argparse.Namespace:
         help='Threshold above the severity of which the runtime messages are logged or displayed.')
 
     parser.add_argument(
-        '--lr_init', type=float, default=1e-3,
+        '--lr_init', type=float, default=3e-4,
         help='Initial learning rate in a scheduled cycle.')
     parser.add_argument(
-        '--lr_max', type=float, default=2e-2,
+        '--lr_max', type=float, default=1e-2,
         help='Peak learning rate in a scheduled cycle.')
     parser.add_argument(
-        '--lr_final', type=float, default=5e-6,
+        '--lr_final', type=float, default=1e-6,
         help='Final learning rate in a scheduled cycle.')
     parser.add_argument(
-        '--pct_start', type=float, default=0.34,
+        '--pct_start', type=float, default=0.3,
         help='Ratio of the cycle at which the learning rate should peak.')
     parser.add_argument(
         '--beta1', type=float, default=0.9,
@@ -100,10 +100,10 @@ def parse_args() -> argparse.Namespace:
         '--save_steps', type=int, default=250,
         help='Step interval for saving current model parameters.')
     parser.add_argument(
-        '--branch_steps', type=int, default=int(1e+4),
+        '--branch_steps', type=int, default=int(5e+3),
         help='Step interval for starting a new branch, i.e. path to save current model parameters.')
     parser.add_argument(
-        '--log_steps', type=int, default=50,
+        '--log_steps', type=int, default=100,
         help='Step interval for computing and logging the running loss.')
 
     parser.add_argument(
@@ -244,6 +244,9 @@ def run_imitation(
     # See: https://discuss.pytorch.org/t/a-problem-occured-when-resuming-an-optimizer/28822/2
     for _ in range(args.resume_step):
         scheduler.step()
+
+    if args.device.startswith('cuda'):
+        torch.backends.cudnn.benchmark = True
 
     start_time = perf_counter()
     model_branch = 0

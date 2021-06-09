@@ -143,7 +143,7 @@ class FMBConv2d(nn.Module):
         self.pre_act_bias = nn.Parameter(torch.zeros(1, in_channels, 1, 1))
         self.pre_exp_bias = nn.Parameter(torch.zeros(1, in_channels, 1, 1))
         self.pre_proj_bias = nn.Parameter(torch.zeros(1, exp_channels, 1, 1))
-        self.res_scale = nn.Parameter(torch.ones(1))
+        self.res_scale = nn.Parameter(torch.ones(1, out_channels, 1, 1))
 
         nn.init.normal_(self.expansion.weight, mean=0., std=init_std(self.expansion, n_blocks, n_layers=2))
         nn.init.constant_(self.expansion.bias, 0.)
@@ -250,7 +250,7 @@ class SEResBlock2d(nn.Module):
         self.pre_act_bias = nn.Parameter(torch.zeros(1, in_channels, 1, 1))
         self.pre_conv1_bias = nn.Parameter(torch.zeros(1, in_channels, 1, 1))
         self.pre_conv2_bias = nn.Parameter(torch.zeros(1, in_channels, 1, 1))
-        self.scale = nn.Parameter(torch.ones(1))
+        self.res_scale = nn.Parameter(torch.ones(1, out_channels, 1, 1))
 
         nn.init.normal_(self.conv1.weight, mean=0., std=init_std(self.conv1, n_blocks=n_blocks))
         nn.init.constant_(self.conv1.bias, 0.)
@@ -293,7 +293,7 @@ class SEResBlock2d(nn.Module):
             # Pointwise gating
             x_res = x_res * self.sigmoid(x_se)
 
-        x_res = x_res * self.scale
+        x_res = x_res * self.res_scale
 
         # Modify identity to allow addition
         if self.id_interp is not None:
@@ -362,7 +362,7 @@ class SASAtten1d(nn.Module):
         self.pre_act_bias = nn.Parameter(torch.zeros(1, in_channels, 1))
         self.pre_qkv_bias = nn.Parameter(torch.zeros(1, in_channels, 1))
         self.pre_proj_bias = nn.Parameter(torch.zeros(1, self.feat_size, 1))
-        self.res_scale = nn.Parameter(torch.ones(1))
+        self.res_scale = nn.Parameter(torch.ones(1, out_channels, 1))
 
         nn.init.normal_(self.qkv_extraction.weight, mean=0., std=init_std(self.qkv_extraction, n_blocks, 2))
         nn.init.constant_(self.qkv_extraction.bias, 0.)
@@ -485,7 +485,7 @@ class FiLMSAtten2d(nn.Module):
         self.pre_act_bias = nn.Parameter(torch.zeros(1, in_channels, 1, 1))
         self.pre_qkv_bias = nn.Parameter(torch.zeros(1, in_channels, 1, 1))
         self.pre_proj_bias = nn.Parameter(torch.zeros(1, self.feat_size, 1, 1))
-        self.res_scale = nn.Parameter(torch.ones(1))
+        self.res_scale = nn.Parameter(torch.ones(1, out_channels, 1, 1))
 
         # Fixup init
         nn.init.normal_(self.qkv_extraction.weight, mean=0., std=init_std(self.qkv_extraction, n_blocks, n_layers=2))
