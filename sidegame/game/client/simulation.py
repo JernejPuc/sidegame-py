@@ -722,7 +722,7 @@ class Simulation:
                 sprite = self.sprites[a_player.team, -1]
 
                 draw_colour(
-                    world, self.SPRITE_AURA_INDICES, self.colours[a_player.position_id], opacity=0.625,
+                    world, self.SPRITE_AURA_INDICES, self.colours[a_player.position_id], opacity=0.3,
                     pos_y=pos_y, pos_x=pos_x, bounds=self.WORLD_BOUNDS)
                 draw_image(world, sprite, pos_y, pos_x, bounds=self.WORLD_BOUNDS)
 
