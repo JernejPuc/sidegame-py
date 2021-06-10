@@ -23,17 +23,24 @@ class PrimaryVisualEncoding(nn.Module):
 
     HEIGHT = 144
     WIDTH = 256
-    FINAL_HEIGHT = HEIGHT // 2**4
-    FINAL_WIDTH = WIDTH // 2**4
+    DIV_FACTOR = 2**4
+    FINAL_HEIGHT = HEIGHT // DIV_FACTOR
+    FINAL_WIDTH = WIDTH // DIV_FACTOR
     FINAL_DEPTH = 96
     ENC_SIZE = 192
-    N_BLOCKS = 5
+    N_BLOCKS = 6
 
     def __init__(self):
         super().__init__()
 
         # 256x144x3 -> 128x72x32
         self.stem = nn.Conv2d(3, 32, 6, stride=2, padding=2, bias=False)
+
+        with torch.no_grad():
+            rgb_mean = self.stem.weight.sum(dim=1, keepdim=False)
+            self.stem.weight[:, 0] = rgb_mean
+            self.stem.weight[:, 1] = rgb_mean
+            self.stem.weight[:, 2] = rgb_mean
 
         self.core = nn.Sequential(
             # 128x72x32 -> 64x36x48
@@ -71,6 +78,7 @@ class FocusedVisualEncoding(nn.Module):
     CROP_LENGTH = 9
     FINAL_DEPTH = 96
     ENC_SIZE = FINAL_DEPTH + PrimaryVisualEncoding.FINAL_DEPTH
+    DIV_FACTOR = PrimaryVisualEncoding.DIV_FACTOR // 2
     N_BLOCKS = 5
 
     def __init__(self):
@@ -116,7 +124,7 @@ class FocusedVisualEncoding(nn.Module):
         # Get 1x1 cutout
         x_visual = batch_crop(
             x_visual,
-            (focal_points / 8).to(torch.long),
+            (focal_points // self.DIV_FACTOR).to(torch.long),
             length=1,
             naive=True,
             batch_indices=self.batch_indices,
@@ -131,42 +139,6 @@ class FocusedVisualEncoding(nn.Module):
         x_focused = torch.flatten(x_focused, start_dim=1)
 
         return x_focused
-
-
-class SpatioTemporalCentre(nn.Module):
-    """
-    Performs spatio-temporal contextualisation. Intended to allow the network
-    to compensate the delay between observations and reactions by predicting
-    the effective state, in which the action will be implemented.
-    """
-
-    HEIGHT = PrimaryVisualEncoding.FINAL_HEIGHT
-    WIDTH = PrimaryVisualEncoding.FINAL_WIDTH
-    INPUT_SIZE = PrimaryVisualEncoding.FINAL_DEPTH
-    HIDDEN_SIZE = 96
-    ENC_SIZE = 192
-    KERNEL_SIZE = 3
-
-    def __init__(self):
-        super().__init__()
-
-        self.silu = nn.SiLU()
-        self.pre_act_bias = nn.Parameter(torch.zeros(1, self.INPUT_SIZE, 1, 1))
-
-        self.conv_lstm_cell = MAConvLSTMCell(
-            self.INPUT_SIZE, self.HIDDEN_SIZE, self.KERNEL_SIZE, self.HEIGHT, self.WIDTH)
-
-        # 16x9x96 -> 1x1xO
-        self.pool = XTraPool(self.HIDDEN_SIZE, self.ENC_SIZE, (self.HEIGHT, self.WIDTH), preactivate=False)
-
-    def forward(self, x_visual: torch.Tensor, actor_keys: Iterable[Hashable]) -> Tuple[torch.Tensor]:
-        x_visual = self.silu(x_visual + self.pre_act_bias)
-        x_visual = self.conv_lstm_cell(x_visual, actor_keys)
-
-        x_visual_enc = self.pool(x_visual)
-        x_visual_enc = torch.flatten(x_visual_enc, start_dim=1)
-
-        return x_visual, x_visual_enc
 
 
 class SpectralAudioEncoding(nn.Module):
@@ -192,14 +164,19 @@ class SpectralAudioEncoding(nn.Module):
             # 32x32 -> 16x32
             nn.MaxPool1d(2, stride=2),
             # 16x32 -> 16x64
-            SASAtten1d(32, 32, self.WIDTH//4, expansion_ratio=4, n_heads=8, n_blocks=self.N_BLOCKS),
-            SASAtten1d(32, 64, self.WIDTH//4, expansion_ratio=4, n_heads=8, n_blocks=self.N_BLOCKS),
+            SASAtten1d(32, 32, self.WIDTH//4, expansion_ratio=2, n_heads=4, n_blocks=self.N_BLOCKS),
+            SASAtten1d(32, 64, self.WIDTH//4, expansion_ratio=2, n_heads=4, n_blocks=self.N_BLOCKS),
             # 16x64 -> 16x96
-            SASAtten1d(64, 64, self.WIDTH//4, expansion_ratio=4, n_heads=8, n_blocks=self.N_BLOCKS),
-            SASAtten1d(64, 64, self.WIDTH//4, expansion_ratio=4, n_heads=8, n_blocks=self.N_BLOCKS),
-            SASAtten1d(64, 96, self.WIDTH//4, expansion_ratio=4, n_heads=8, n_blocks=self.N_BLOCKS),
+            SASAtten1d(64, 64, self.WIDTH//4, expansion_ratio=2, n_heads=4, n_blocks=self.N_BLOCKS),
+            SASAtten1d(64, 64, self.WIDTH//4, expansion_ratio=2, n_heads=4, n_blocks=self.N_BLOCKS),
+            SASAtten1d(64, 96, self.WIDTH//4, expansion_ratio=2, n_heads=4, n_blocks=self.N_BLOCKS),
             # 16x96 -> 1xO
             XTraPool(96, self.ENC_SIZE, self.WIDTH//4, dim=1))
+
+        with torch.no_grad():
+            lr_mean = self.blocks[0].weight.sum(dim=1, keepdim=False)
+            self.blocks[0].weight[:, 0] = lr_mean
+            self.blocks[0].weight[:, 1] = lr_mean
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.blocks(x)
@@ -217,20 +194,18 @@ class AttentionCentre(nn.Module):
     the context, and to be capable of reflexes.
     """
 
-    HEIGHT = SpatioTemporalCentre.HEIGHT
-    WIDTH = SpatioTemporalCentre.WIDTH
-    ENC_SIZE = 192
-    FEAT_SIZE = SpatioTemporalCentre.HIDDEN_SIZE
+    HEIGHT = PrimaryVisualEncoding.FINAL_HEIGHT
+    WIDTH = PrimaryVisualEncoding.FINAL_WIDTH
+    FEAT_SIZE = PrimaryVisualEncoding.FINAL_DEPTH
     EXP_RATIO = 1
     N_HEADS = 6
-    N_BLOCKS = 2
+    N_BLOCKS = 6
 
     def __init__(self, input_state_size: int):
         super().__init__()
 
         self.modulation_size = self.FEAT_SIZE * self.EXP_RATIO
 
-        self.tanh = nn.Tanh()
         self.modulation = nn.Linear(input_state_size, self.modulation_size*2)
         nn.init.constant_(self.modulation.bias, 0.)
 
@@ -238,23 +213,50 @@ class AttentionCentre(nn.Module):
             self.FEAT_SIZE, self.FEAT_SIZE, self.HEIGHT, self.WIDTH,
             expansion_ratio=self.EXP_RATIO, n_heads=self.N_HEADS, n_blocks=self.N_BLOCKS)
 
-        # 16x9x96 -> 1x1xO
-        self.pool = XTraPool(self.FEAT_SIZE, self.ENC_SIZE, (self.HEIGHT, self.WIDTH))
-
     def forward(self, x_visual: torch.Tensor, x_state: torch.Tensor) -> Tuple[torch.Tensor]:
-
         mod = self.modulation(x_state)
-        mod = self.tanh(mod)
         mod_multiplier, mod_bias = torch.split(mod, self.modulation_size, dim=1)
 
         x_visual = self.film_attention(x_visual, mod_multiplier, mod_bias)
 
+        return x_visual
+
+
+class SpatioTemporalCentre(nn.Module):
+    """
+    Performs spatio-temporal contextualisation. Intended to allow the network
+    to compensate the delay between observations and reactions by predicting
+    the effective state, in which the action will be implemented.
+    """
+
+    HEIGHT = AttentionCentre.HEIGHT
+    WIDTH = AttentionCentre.WIDTH
+    INPUT_SIZE = AttentionCentre.FEAT_SIZE
+    HIDDEN_SIZE = 96
+    ENC_SIZE = 192
+    KERNEL_SIZE = 3
+
+    def __init__(self):
+        super().__init__()
+
+        self.silu = nn.SiLU()
+        self.pre_act_bias = nn.Parameter(torch.zeros(1, self.INPUT_SIZE, 1, 1))
+        self.pre_conv_bias = nn.Parameter(torch.zeros(1, self.INPUT_SIZE, 1, 1))
+
+        self.conv_lstm_cell = MAConvLSTMCell(
+            self.INPUT_SIZE, self.HIDDEN_SIZE, self.KERNEL_SIZE, self.HEIGHT, self.WIDTH)
+
+        # 16x9x96 -> 1x1xO
+        self.pool = XTraPool(self.HIDDEN_SIZE, self.ENC_SIZE, (self.HEIGHT, self.WIDTH), preactivate=False)
+
+    def forward(self, x_visual: torch.Tensor, actor_keys: Iterable[Hashable]) -> Tuple[torch.Tensor]:
+        x_visual = self.silu(x_visual + self.pre_act_bias) + self.pre_conv_bias
+        x_visual = self.conv_lstm_cell(x_visual, actor_keys)
+
         x_visual_enc = self.pool(x_visual)
         x_visual_enc = torch.flatten(x_visual_enc, start_dim=1)
 
-        x_state = torch.cat((x_visual_enc, x_state), dim=1)
-
-        return x_visual, x_state
+        return x_visual, x_visual_enc
 
 
 class MotorCentre(nn.Module):
@@ -265,9 +267,9 @@ class MotorCentre(nn.Module):
     that the focus should be at some point.
     """
 
-    HEIGHT = AttentionCentre.HEIGHT
-    WIDTH = AttentionCentre.WIDTH
-    FEAT_SIZE = AttentionCentre.FEAT_SIZE
+    HEIGHT = SpatioTemporalCentre.HEIGHT
+    WIDTH = SpatioTemporalCentre.WIDTH
+    FEAT_SIZE = SpatioTemporalCentre.HIDDEN_SIZE
     ACTION_BASE_SIZE = 96
     ACTION_SIZE = 72
 
@@ -279,33 +281,27 @@ class MotorCentre(nn.Module):
     KERNEL_UNROLL_3 = KERNEL_SIZE_3**2
 
     RES_SPLIT = (FEAT_SIZE, HEIGHT*WIDTH, ACTION_BASE_SIZE)
-    KERNEL_SPLIT = (KERNEL_UNROLL_1, KERNEL_UNROLL_2)
+    KERNEL_SPLIT = (KERNEL_UNROLL_1, KERNEL_UNROLL_2, KERNEL_UNROLL_3)
 
     def __init__(self, input_state_size: int):
         super().__init__()
 
         self.silu = nn.SiLU()
-        self.tanh = nn.Tanh()
+        self.softmax = nn.Softmax(dim=1)
 
         # 384 -> 336 (96 + 16x9 + 96)
         self.base_fc = nn.Linear(input_state_size, self.FEAT_SIZE + self.HEIGHT*self.WIDTH + self.ACTION_BASE_SIZE)
 
-        # 240 (16x9 + 96) -> 34 (3x3 + 5x5)
-        self.kernel_fc_1 = nn.Linear(
+        # 240 (16x9 + 96) -> 83 (3x3 + 5x5 + 7x7)
+        self.kernel_fc = nn.Linear(
             self.HEIGHT*self.WIDTH + self.ACTION_BASE_SIZE,
-            self.KERNEL_UNROLL_1 + self.KERNEL_UNROLL_2)
-
-        # 130 (34 + 96) -> 49 (7x7)
-        self.kernel_fc_2 = nn.Linear(
-            self.KERNEL_UNROLL_1 + self.KERNEL_UNROLL_2 + self.ACTION_BASE_SIZE,
-            self.KERNEL_UNROLL_3)
+            self.KERNEL_UNROLL_1 + self.KERNEL_UNROLL_2 + self.KERNEL_UNROLL_3)
 
         # 480 (384 + 96) -> 72
         self.action_fc = nn.Linear(input_state_size + self.ACTION_BASE_SIZE, self.ACTION_SIZE)
 
         nn.init.constant_(self.base_fc.bias, 0.)
-        nn.init.constant_(self.kernel_fc_1.bias, 0.)
-        nn.init.constant_(self.kernel_fc_2.bias, 0.)
+        nn.init.constant_(self.kernel_fc.bias, 0.)
         nn.init.constant_(self.action_fc.bias, 0.)
 
         self.interp_size_1 = (self.HEIGHT*2, self.WIDTH*2)  # 32x18
@@ -322,31 +318,21 @@ class MotorCentre(nn.Module):
         # Out channels, in channels, dimensions
         kernels = kernels.view(b, 1, kernel_size, kernel_size)
 
-        x_res = self.silu(x)
-        x_res = x_res.view(1, b, h, w)
+        x = x.view(1, b, h, w)
 
         # Need to use `F.pad` for modes besides `zeros`
-        x_res = F.pad(x_res, (kernel_size // 2,) * 4, mode='replicate')
+        x = F.pad(x, (kernel_size // 2,) * 4, mode='replicate')
 
-        x_res = F.conv2d(x_res, kernels, groups=b)
-        x_res = x_res.reshape(b, 1, h, w)
+        x = F.conv2d(x, kernels, groups=b)
+        x = x.reshape(b, 1, h, w)
 
-        return x + x_res
+        return x
 
     def forward(self, x_visual: torch.Tensor, x_state: torch.Tensor) -> Tuple[torch.Tensor]:
         focus_res = self.base_fc(x_state)
         base_query, base_focus, fine_action = torch.split(focus_res, self.RES_SPLIT, dim=1)
 
-        base_query = self.tanh(base_query)
-        base_focus = self.tanh(base_focus)
         fine_action = self.silu(fine_action)
-
-        focus_res = self.kernel_fc_1(torch.cat((base_focus, fine_action), dim=1))
-        focus_res = self.tanh(focus_res)
-        kernel_weights_1, kernel_weights_2 = torch.split(focus_res, self.KERNEL_SPLIT, dim=1)
-
-        kernel_weights_3 = self.kernel_fc_2(torch.cat((focus_res, fine_action), dim=1))
-        kernel_weights_3 = self.tanh(kernel_weights_3)
 
         # Mouse/keyboard actions
         x_action = self.action_fc(torch.cat((x_state, fine_action), dim=1))
@@ -359,9 +345,21 @@ class MotorCentre(nn.Module):
 
         x_focus = x_visual.view(1, b*c, h, w)
         x_focus = F.conv2d(x_focus, base_query, groups=b) + base_focus
-        x_focus = x_focus.reshape(b, 1, h, w)
+
+        # Get refinement kernels
+        x_base = x_focus[0].reshape(b, h*w)
+        x_base = self.silu(x_base)
+
+        focus_res = self.kernel_fc(torch.cat((x_base, fine_action), dim=1))
+        kernel_weights_1, kernel_weights_2, kernel_weights_3 = torch.split(focus_res, self.KERNEL_SPLIT, dim=1)
+
+        kernel_weights_1 = self.softmax(kernel_weights_1)
+        kernel_weights_2 = self.softmax(kernel_weights_2)
+        kernel_weights_3 = self.softmax(kernel_weights_3)
 
         # Refine focus in a series of upscalings and adaptive convolutions
+        x_focus = x_focus.reshape(b, 1, h, w)
+
         x_focus = self.refine(x_focus, kernel_weights_1, self.KERNEL_SIZE_1, self.interp_size_1)
         x_focus = self.refine(x_focus, kernel_weights_2, self.KERNEL_SIZE_2, self.interp_size_2)
         x_focus = self.refine(x_focus, kernel_weights_3, self.KERNEL_SIZE_3, self.interp_size_3)
@@ -395,15 +393,15 @@ class PCNet(nn.Module):
     N_WORKERS = N_DELAY
     STATE_LSTM_SIZE = 384
     INTENT_LSTM_SIZE = 384
-    MAX_FOCAL_OFFSET = float(PrimaryVisualEncoding.WIDTH)
+    MAX_FOCAL_OFFSET = float(PrimaryVisualEncoding.WIDTH // 2)
     MKBD_ENC_SIZE = 22
 
     def __init__(self):
         super().__init__()
 
-        input_state_size = PrimaryVisualEncoding.ENC_SIZE + SpectralAudioEncoding.ENC_SIZE + self.MKBD_ENC_SIZE
-        ctx_state_size = SpatioTemporalCentre.ENC_SIZE + FocusedVisualEncoding.ENC_SIZE + self.STATE_LSTM_SIZE
-        attended_state_size = ctx_state_size + AttentionCentre.ENC_SIZE
+        input_state_size = PrimaryVisualEncoding.ENC_SIZE + FocusedVisualEncoding.ENC_SIZE + \
+            SpectralAudioEncoding.ENC_SIZE + self.MKBD_ENC_SIZE
+        attended_state_size = SpatioTemporalCentre.ENC_SIZE + self.STATE_LSTM_SIZE
 
         # Cognitive centres
         self.primary_visual_encoding = PrimaryVisualEncoding()
@@ -411,8 +409,8 @@ class PCNet(nn.Module):
         self.spectral_audio_encoding = SpectralAudioEncoding()
 
         self.temporal_centre = MALSTMCell(input_state_size, self.STATE_LSTM_SIZE, init_horizon=self.N_DELAY)
+        self.attention_centre = AttentionCentre(self.STATE_LSTM_SIZE)
         self.spatio_temporal_centre = SpatioTemporalCentre()
-        self.attention_centre = AttentionCentre(ctx_state_size)
         self.intent_inference = MALSTMCell(attended_state_size, self.INTENT_LSTM_SIZE, init_horizon=(self.N_FPS//2))
         self.motor_decoding = MotorCentre(self.INTENT_LSTM_SIZE)
 
@@ -497,20 +495,20 @@ class PCNet(nn.Module):
             x_mkbd = torch.hstack((x_mkbd, focal_points / self.MAX_FOCAL_OFFSET))
             x_mkbd = x_mkbd * self.mkbd_scale + self.mkbd_bias
 
-            x_state = torch.hstack((x_visual_enc, x_audio, x_mkbd))
+            x_state = torch.hstack((x_visual_enc, x_focused_enc, x_audio, x_mkbd))
             x_state = self.temporal_centre(x_state, actor_keys)
 
-        # Spatio-temporal contextualisation
-        with self.lock_4:
-            x_visual, x_visual_enc = self.spatio_temporal_centre(x_visual, actor_keys)
-
         # Attention
+        with self.lock_4:
+            x_visual = self.attention_centre(x_visual, x_state)
+
+        # Spatio-temporal contextualisation
         with self.lock_5:
-            x_state = torch.hstack((x_visual_enc, x_focused_enc, x_state))
-            x_visual, x_state = self.attention_centre(x_visual, x_state)
+            x_visual, x_visual_enc = self.spatio_temporal_centre(x_visual, actor_keys)
 
         # Action inference and motor decoding
         with self.lock_6:
+            x_state = torch.hstack((x_visual_enc, x_state))
             x_state = self.intent_inference(x_state, actor_keys)
             x_focus, x_action = self.motor_decoding(x_visual, x_state)
 

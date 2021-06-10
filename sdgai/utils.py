@@ -162,7 +162,7 @@ def supervised_loss(
     x_action: torch.Tensor,
     demo_focus: torch.Tensor,
     demo_action: torch.Tensor,
-    focal_weight: float = 0.05
+    focal_weight: float = 0.1
 ) -> torch.Tensor:
     """
     Supervised loss function based on cross entropy (related to MLE and KL div).
@@ -322,6 +322,10 @@ class Dataset:
         """
         Get indices of focal points by sampling from suggested probability
         distributions. Sampled points can be held for a few consecutive frames.
+
+        NOTE: Sampling can cause a noticeable bottleneck in a training process.
+        Its complexity is determined by sequence length, batch size, and,
+        most heavily, image dimensions.
         """
 
         # n, b, h, w -> n*b, h*w -> n*b, i -> n, b, i

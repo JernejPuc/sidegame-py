@@ -9,7 +9,7 @@ from sdgai.utils import init_std
 
 class XTraPool(nn.Module):
     """
-    Expansive trainable pooling with pre-activation and Fixup initialisation.
+    Expansive trainable pooling with pre-activation and Fixup-like initialisation.
 
     It applies multiple strided depthwise convolutions per channel, followed by
     projection, to pool with consideration for several spatial configurations.
@@ -87,7 +87,7 @@ class XTraPool(nn.Module):
 class FMBConv2d(nn.Module):
     """
     Fused MBConv2d block with optional squeeze and excitation, modified for
-    pre-activation and to use Fixup initialisation and parameters.
+    pre-activation and to use Fixup-like initialisation and parameters.
 
     Fixup multipliers and biases are added to main branches in residual
     blocks to replace batch normalisation layers. In a convolutional network,
@@ -134,7 +134,7 @@ class FMBConv2d(nn.Module):
         self.projection = nn.Conv2d(exp_channels, out_channels, 1, bias=False)
 
         if out_channels != in_channels:
-            self.id_ext = nn.Conv2d(in_channels, out_channels-in_channels, 1, bias=True)
+            self.id_ext = nn.Conv2d(in_channels, out_channels-in_channels, 1, bias=False)
 
         else:
             self.id_ext = None
@@ -143,7 +143,7 @@ class FMBConv2d(nn.Module):
         self.pre_act_bias = nn.Parameter(torch.zeros(1, in_channels, 1, 1))
         self.pre_exp_bias = nn.Parameter(torch.zeros(1, in_channels, 1, 1))
         self.pre_proj_bias = nn.Parameter(torch.zeros(1, exp_channels, 1, 1))
-        self.res_scale = nn.Parameter(torch.ones(1, out_channels, 1, 1))
+        self.id_scale = nn.Parameter(torch.ones(1, out_channels, 1, 1))
 
         nn.init.normal_(self.expansion.weight, mean=0., std=init_std(self.expansion, n_blocks, n_layers=2))
         nn.init.constant_(self.expansion.bias, 0.)
@@ -151,7 +151,6 @@ class FMBConv2d(nn.Module):
 
         if self.id_ext is not None:
             nn.init.normal_(self.id_ext.weight, mean=0., std=init_std(self.id_ext))
-            nn.init.constant_(self.id_ext.bias, 0.)
 
         # SE components
         self.use_se = bool(squeeze_ratio)
@@ -160,8 +159,8 @@ class FMBConv2d(nn.Module):
             squeezed_channels = int(exp_channels // squeeze_ratio)
 
             self.sigmoid = nn.Sigmoid()
-            self.squeeze = nn.Conv2d(exp_channels, squeezed_channels, 1, bias=False)
-            self.excitation = nn.Conv2d(squeezed_channels, exp_channels, 1, bias=False)
+            self.squeeze = nn.Conv2d(exp_channels, squeezed_channels, 1, bias=True)
+            self.excitation = nn.Conv2d(squeezed_channels, exp_channels, 1, bias=True)
 
             nn.init.normal_(self.squeeze.weight, mean=0., std=init_std(self.squeeze))
             nn.init.normal_(self.excitation.weight, mean=0., std=init_std(self.excitation))
@@ -189,25 +188,23 @@ class FMBConv2d(nn.Module):
             x_res = x_res * self.sigmoid(x_se)
 
         x_res = self.projection(x_res + self.pre_proj_bias)
-        x_res = x_res * self.res_scale
 
         # Modify identity to allow addition
         if self.id_avg is not None:
             x = self.id_avg(x)
-            x_preact = self.id_avg(x_preact)
 
         if self.id_ext is not None:
+            x_preact = x_preact if self.id_avg is None else self.id_avg(x_preact)
             x_ext = self.id_ext(x_preact)  # Bias in x_preact
-            x_ext = self.silu(x_ext)  # Bias in id_ext
             x = torch.cat((x, x_ext), dim=1)
 
-        return x + x_res
+        return x * self.id_scale + x_res
 
 
 class SEResBlock2d(nn.Module):
     """
     Basic residual block with optional squeeze and excitation, modified for
-    pre-activation and to use Fixup initialisation and parameters.
+    pre-activation and to use Fixup-like initialisation and parameters.
     """
 
     def __init__(
@@ -234,11 +231,11 @@ class SEResBlock2d(nn.Module):
             self.conv2 = nn.Conv2d(
                 in_channels, out_channels, 4, stride=2, padding=1, padding_mode=padding_mode, bias=False)
 
-            self.id_interp = nn.AvgPool2d(2, stride=2)
+            self.id_avg = nn.AvgPool2d(2, stride=2)
 
         else:
             self.conv2 = nn.Conv2d(in_channels, out_channels, 3, padding=1, padding_mode=padding_mode, bias=False)
-            self.id_interp = None
+            self.id_avg = None
 
         if out_channels != in_channels:
             self.id_ext = nn.Conv2d(in_channels, out_channels-in_channels, 1, bias=False)
@@ -250,7 +247,7 @@ class SEResBlock2d(nn.Module):
         self.pre_act_bias = nn.Parameter(torch.zeros(1, in_channels, 1, 1))
         self.pre_conv1_bias = nn.Parameter(torch.zeros(1, in_channels, 1, 1))
         self.pre_conv2_bias = nn.Parameter(torch.zeros(1, in_channels, 1, 1))
-        self.res_scale = nn.Parameter(torch.ones(1, out_channels, 1, 1))
+        self.id_scale = nn.Parameter(torch.ones(1, out_channels, 1, 1))
 
         nn.init.normal_(self.conv1.weight, mean=0., std=init_std(self.conv1, n_blocks=n_blocks))
         nn.init.constant_(self.conv1.bias, 0.)
@@ -264,8 +261,8 @@ class SEResBlock2d(nn.Module):
 
         if self.use_se:
             self.sigmoid = nn.Sigmoid()
-            self.squeeze = nn.Conv2d(out_channels, out_channels // squeeze_ratio, 1, bias=False)
-            self.excite = nn.Conv2d(out_channels // squeeze_ratio, out_channels, 1, bias=False)
+            self.squeeze = nn.Conv2d(out_channels, out_channels // squeeze_ratio, 1, bias=True)
+            self.excite = nn.Conv2d(out_channels // squeeze_ratio, out_channels, 1, bias=True)
 
             nn.init.normal_(self.squeeze.weight, mean=0., std=init_std(self.squeeze))
             nn.init.normal_(self.excite.weight, mean=0., std=init_std(self.excite))
@@ -293,22 +290,21 @@ class SEResBlock2d(nn.Module):
             # Pointwise gating
             x_res = x_res * self.sigmoid(x_se)
 
-        x_res = x_res * self.res_scale
-
         # Modify identity to allow addition
-        if self.id_interp is not None:
-            x = self.id_interp(x)
-            x_preact = self.id_interp(x_preact)
+        if self.id_avg is not None:
+            x = self.id_avg(x)
 
         if self.id_ext is not None:
-            x = torch.cat((x, self.id_ext(x_preact)), dim=1)
+            x_preact = x_preact if self.id_avg is None else self.id_avg(x_preact)
+            x_ext = self.id_ext(x_preact)  # Bias in x_preact
+            x = torch.cat((x, x_ext), dim=1)
 
-        return x + x_res
+        return x * self.id_scale + x_res
 
 
 class SASAtten1d(nn.Module):
     """
-    Residual (inv.) bottleneck block with attention, pre-activation, and Fixup
+    Residual (inv.) bottleneck block with attention, pre-activation, and Fixup-like
     initialisation. Based on stand-alone and transformer self-attention models.
     """
 
@@ -346,7 +342,7 @@ class SASAtten1d(nn.Module):
             self.id_avg = None
 
         if out_channels != in_channels:
-            self.id_ext = nn.Conv1d(in_channels, out_channels-in_channels, 1, bias=True)
+            self.id_ext = nn.Conv1d(in_channels, out_channels-in_channels, 1, bias=False)
 
         else:
             self.id_ext = None
@@ -362,7 +358,7 @@ class SASAtten1d(nn.Module):
         self.pre_act_bias = nn.Parameter(torch.zeros(1, in_channels, 1))
         self.pre_qkv_bias = nn.Parameter(torch.zeros(1, in_channels, 1))
         self.pre_proj_bias = nn.Parameter(torch.zeros(1, self.feat_size, 1))
-        self.res_scale = nn.Parameter(torch.ones(1, out_channels, 1))
+        self.id_scale = nn.Parameter(torch.ones(1, out_channels, 1))
 
         nn.init.normal_(self.qkv_extraction.weight, mean=0., std=init_std(self.qkv_extraction, n_blocks, 2))
         nn.init.constant_(self.qkv_extraction.bias, 0.)
@@ -370,7 +366,6 @@ class SASAtten1d(nn.Module):
 
         if self.id_ext is not None:
             nn.init.normal_(self.id_ext.weight, mean=0., std=init_std(self.id_ext))
-            nn.init.constant_(self.id_ext.bias, 0.)
 
     def attention(self, x: torch.Tensor) -> torch.Tensor:
         """Multi-headed scaled dot product global self-attention."""
@@ -410,21 +405,19 @@ class SASAtten1d(nn.Module):
         # Role of activation satisfied by mult. with softmax in attention
 
         x_res = self.projection(x_res + self.pre_proj_bias)
-        x_res = x_res * self.res_scale
 
         # Modify identity to allow addition
         if self.id_ext is not None:
             x_ext = self.id_ext(x_preact)  # Bias in x_preact
-            x_ext = self.silu(x_ext)  # Bias in id_ext
             x = torch.cat((x, x_ext), dim=1)
 
-        return x + x_res
+        return x * self.id_scale + x_res
 
 
 class FiLMSAtten2d(nn.Module):
     """
     Residual (inv.) bottleneck block with modulated attention, pre-activation,
-    and Fixup initialisation.
+    and Fixup-like initialisation.
 
     Feature-wise linear modulation (FiLM) is used to add an external, global
     objective to the query by highlighting its pattern, e.g. emphasising
@@ -467,7 +460,7 @@ class FiLMSAtten2d(nn.Module):
             self.id_avg = None
 
         if out_channels != in_channels:
-            self.id_ext = nn.Conv2d(in_channels, out_channels-in_channels, 1, bias=True)
+            self.id_ext = nn.Conv2d(in_channels, out_channels-in_channels, 1, bias=False)
 
         else:
             self.id_ext = None
@@ -485,7 +478,7 @@ class FiLMSAtten2d(nn.Module):
         self.pre_act_bias = nn.Parameter(torch.zeros(1, in_channels, 1, 1))
         self.pre_qkv_bias = nn.Parameter(torch.zeros(1, in_channels, 1, 1))
         self.pre_proj_bias = nn.Parameter(torch.zeros(1, self.feat_size, 1, 1))
-        self.res_scale = nn.Parameter(torch.ones(1, out_channels, 1, 1))
+        self.id_scale = nn.Parameter(torch.ones(1, out_channels, 1, 1))
 
         # Fixup init
         nn.init.normal_(self.qkv_extraction.weight, mean=0., std=init_std(self.qkv_extraction, n_blocks, n_layers=2))
@@ -494,7 +487,6 @@ class FiLMSAtten2d(nn.Module):
 
         if self.id_ext is not None:
             nn.init.normal_(self.id_ext.weight, std=init_std(self.id_ext))
-            nn.init.constant_(self.id_ext.bias, 0.)
 
     def film_attention(self, x: torch.Tensor, mod_multiplier: torch.Tensor, mod_bias: torch.Tensor) -> torch.Tensor:
         """Multi-headed scaled dot product global self-attention with FiLM."""
@@ -538,15 +530,13 @@ class FiLMSAtten2d(nn.Module):
 
         # Pointwise projection
         x_res = self.projection(x_res + self.pre_proj_bias)
-        x_res = x_res * self.res_scale
 
         # Modify identity to allow addition
         if self.id_ext is not None:
             x_ext = self.id_ext(x_preact)  # Bias in x_preact
-            x_ext = self.silu(x_ext)  # Bias in id_ext
             x = torch.cat((x, x_ext), dim=1)
 
-        return x + x_res
+        return x * self.id_scale + x_res
 
 
 class MALSTMCell(nn.Module):
