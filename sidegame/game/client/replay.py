@@ -18,7 +18,7 @@ from sidegame.networking import Entry, Action, StridedFunction, ReplayClient
 from sidegame.game.shared import GameID, Map, Session
 from sidegame.game.client.interface import SDGLiveClient
 from sidegame.game.client.simulation import Simulation
-from sidegame.game.client.tracking import DATA_DIR, StatTracker
+from sidegame.game.client.tracking import DATA_DIR, StatTracker, FocusTracker
 
 
 class SDGReplayClient(ReplayClient):
@@ -75,6 +75,10 @@ class SDGReplayClient(ReplayClient):
         self.sim = Simulation(args.tick_rate, args.volume, self.own_entity_id, rng=self.rng)
         self.session: Session = self.sim.session
         self.stats = StatTracker(self.session, self.own_entity)
+        self.focus = FocusTracker(
+            path=args.focus_path,
+            mode=(FocusTracker.MODE_WRITE if args.focus_record else FocusTracker.MODE_READ),
+            start_active=(not headless))
 
         # Expose observations for external access
         self.headless = headless
@@ -109,6 +113,9 @@ class SDGReplayClient(ReplayClient):
             self.strided_refresh: Callable = StridedFunction(
                 self.refresh_display, self._fps_limiter.tick_rate / args.refresh_rate)
 
+            if self.focus.mode == FocusTracker.MODE_WRITE:
+                sdl2.SDL_SetRelativeMouseMode(sdl2.SDL_TRUE)
+
     def create_entity(self, entity_id):
         return SDGLiveClient.create_entity(self, entity_id)
 
@@ -132,6 +139,10 @@ class SDGReplayClient(ReplayClient):
         """Produce a new frame, upscale it, and update the image on screen."""
 
         frame = self.sim.get_frame()
+
+        # Add focus marker
+        self.focus.get(self._tick_counter)
+        self.focus.register(frame, self._tick_counter)
 
         # Update externally accessible image and audio buffer
         if self.headless:
@@ -351,6 +362,10 @@ class SDGReplayClient(ReplayClient):
                 # (Un)Pause
                 elif keysim == sdl2.SDLK_SPACE or keysim == sdl2.SDLK_k:
                     self.paused = not self.paused
+
+                    if self.focus.mode == FocusTracker.MODE_WRITE:
+                        sdl2.SDL_SetRelativeMouseMode(sdl2.SDL_FALSE if self.paused else sdl2.SDL_TRUE)
+
                     self.logger.info('Replay paused.' if self.paused else 'Replay resumed.')
 
                 # Speed up
@@ -388,6 +403,11 @@ class SDGReplayClient(ReplayClient):
                     self.logger.info('Rewinding 10 seconds back...')
                     return self.CMD_NONE, self.jump_to_timestamp(current_timestamp, max(0., current_timestamp - 10.))
 
+                # Toggle labelling/display
+                elif keysim == sdl2.SDLK_x:
+                    if self.focus.mode != FocusTracker.MODE_NULL:
+                        self.focus.active = not self.focus.active
+
             elif self.session.is_spectator(self.sim.own_player_id):
 
                 # Cycle observed player
@@ -410,13 +430,22 @@ class SDGReplayClient(ReplayClient):
                     elif event.wheel.y < 0:
                         self.sim.wheel_y = min(self.sim.wheel_y+1, max(len(self.sim.chat)-5, 0))
 
+            elif event_type == sdl2.SDL_MOUSEMOTION and self.focus.mode == FocusTracker.MODE_WRITE:
+                mmot_yrel += event.motion.yrel * self.mouse_sensitivity
+                mmot_xrel += event.motion.xrel * self.mouse_sensitivity
+
         if self.session.is_spectator(self.sim.own_player_id):
             self.sim.cursor_y = np.clip(self.sim.cursor_y + mmot_yrel, 2., 105.)
             self.sim.cursor_x = np.clip(self.sim.cursor_x + mmot_xrel, 66., 253.)
 
+        if self.focus.mode == FocusTracker.MODE_WRITE and not self.paused:
+            self.focus.update(mmot_yrel, mmot_xrel)
+
         return (self.CMD_PAUSE if self.paused else self.CMD_NONE), None
 
     def cleanup(self):
+        self.focus.finish(self.logger)
+
         if self.headless:
             return
 

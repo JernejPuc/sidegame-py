@@ -93,6 +93,11 @@ def parse_args() -> argparse.Namespace:
         help='Matchmaking rating (MMR) used to route a client through the matchmaking server. '
         'If 0, the address and port are assumed to belong to a session server, which will be contacted directly.')
 
+    parser.add_argument(
+        '--focus_path', type=str, default=None, help='Path to a recording of focal coordinates.')
+    parser.add_argument(
+        '--focus_record', action='store_true', help='Whether to record or replay focal coordinates.')
+
     args, remaining_args = config_parser.parse_known_args()
 
     if args.config_file:

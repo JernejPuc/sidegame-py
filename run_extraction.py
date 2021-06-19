@@ -29,103 +29,167 @@ REF = np.power(WINDOW.sum(), 2) / 2.
 N_DELAYED_FRAMES = 6
 MOUSE_BINS = np.array([0., 0.48, 1.19, 2.23, 3.78, 6.06, 9.44, 14.43, 21.82, 32.73, 48.87, 72.73, 108.])
 
-MAIN_HEIGHT = 108//2
-CHAT_WIDTH = 64//2
-FOCUS_HEIGHT = 144//2
-FOCUS_WIDTH = 256//2
-POS_X, POS_Y = np.meshgrid(np.arange(FOCUS_WIDTH), np.arange(FOCUS_HEIGHT))
 
-BASE_FOCUS = np.zeros((FOCUS_HEIGHT, FOCUS_WIDTH))
-CHAT_FOCUS = np.zeros((FOCUS_HEIGHT, FOCUS_WIDTH))
-HUD_FOCUS = np.zeros((FOCUS_HEIGHT, FOCUS_WIDTH))
-CHAT_FOCUS[:, :CHAT_WIDTH] = np.linspace(0., 1., FOCUS_HEIGHT)[:, None].repeat(CHAT_WIDTH, axis=1)
-HUD_FOCUS[MAIN_HEIGHT:, CHAT_WIDTH:] = 1.
-CHAT_FOCUS /= CHAT_FOCUS.sum()
-HUD_FOCUS /= HUD_FOCUS.sum()
+class FocusSampler:
+    """Deprecated remnants of a past approach to estimating focal coordinates."""
 
-REDUCTION_NONE = 0
-REDUCTION_STD = 1
-REDUCTION_TRUNC = 2
+    REDUCTION_NONE = 0
+    REDUCTION_STD = 1
+    REDUCTION_TRUNC = 2
 
+    FOCUS_HEIGHT = 72
+    FOCUS_WIDTH = 128
+    FOCUS_HOLD_PROBA = 0.8
 
-def gaussian(y: float, x: float, std: float = 1., reduction: int = REDUCTION_STD) -> np.ndarray:
-    """Generate a gaussian distribution around given coordinates."""
+    MAIN_HEIGHT = 108//2
+    CHAT_WIDTH = 64//2
+    FOCUS_HEIGHT = 144//2
+    FOCUS_WIDTH = 256//2
 
-    res = np.exp(-0.5 * ((x - POS_X)**2 + (y - POS_Y)**2)/std**2)
+    CHUNKS = (6, 1, 72, 128)
 
-    if reduction == REDUCTION_TRUNC:
-        res = np.where(res < 1e-3, 0., res)
-        res /= res.sum()
+    def __init__(self, seed: int = None):
+        self.rng: np.random.Generator = np.random.default_rng(seed=seed)
 
-    elif reduction == REDUCTION_STD:
-        res *= 1. / (std**2 * 2.*np.pi)
+        self.pos_x, self.pos_y = np.meshgrid(np.arange(self.FOCUS_WIDTH), np.arange(self.FOCUS_HEIGHT))
 
-    return res
+        self.base_focus = np.zeros((self.FOCUS_HEIGHT, self.FOCUS_WIDTH))
+        self.chat_focus = np.zeros((self.FOCUS_HEIGHT, self.FOCUS_WIDTH))
+        self.hud_focus = np.zeros((self.FOCUS_HEIGHT, self.FOCUS_WIDTH))
 
+        self.chat_focus[:, :self.CHAT_WIDTH] = \
+            np.linspace(0., 1., self.FOCUS_HEIGHT)[:, None].repeat(self.CHAT_WIDTH, axis=1)
+        self.hud_focus[self.MAIN_HEIGHT:, self.CHAT_WIDTH:] = 1.
+        self.chat_focus /= self.chat_focus.sum()
+        self.hud_focus /= self.hud_focus.sum()
 
-def get_focal_distribution(
-    sdgr: SDGReplayClient,
-    space_pressed: bool,
-    message_received: bool,
-    initial_frame: bool = False
-) -> np.ndarray:
-    """
-    Get suggested focal distribution based on view, cursor coordinates,
-    and entity positions.
-    """
+        self.focus_indices = [
+            np.unravel_index(idx, (self.FOCUS_HEIGHT, self.FOCUS_WIDTH))
+            for idx in range(self.FOCUS_HEIGHT * self.FOCUS_WIDTH)]
 
-    # Get base highlights
-    if initial_frame:
-        focus = BASE_FOCUS
+        self.last_chat_lengths = deque(False for _ in range(N_DELAYED_FRAMES))
 
-    elif space_pressed or message_received:
-        focus = CHAT_FOCUS
+    def gaussian(self, y: float, x: float, std: float = 1., reduction: int = REDUCTION_STD) -> np.ndarray:
+        """Generate a gaussian distribution around given coordinates."""
 
-    elif sdgr.sim.view == GameID.VIEW_WORLD:
-        focus = HUD_FOCUS
+        res = np.exp(-0.5 * ((x - self.pos_x)**2 + (y - self.pos_y)**2)/std**2)
 
-    elif sdgr.sim.view == GameID.VIEW_STORE:
-        focus = BASE_FOCUS
+        if reduction == self.REDUCTION_TRUNC:
+            res = np.where(res < 1e-3, 0., res)
+            res /= res.sum()
 
-    else:
-        focus = CHAT_FOCUS
+        elif reduction == self.REDUCTION_STD:
+            res *= 1. / (std**2 * 2.*np.pi)
 
-    # Get cursor highlight
-    std = 5. if sdgr.sim.view == GameID.VIEW_WORLD else 7.5
-    focus = focus + gaussian(sdgr.sim.cursor_y//2., sdgr.sim.cursor_x//2., std=std, reduction=REDUCTION_TRUNC)
+        return res
 
-    if sdgr.sim.view != GameID.VIEW_WORLD or initial_frame:
+    def get_focal_distribution(
+        self,
+        sdgr: SDGReplayClient,
+        space_pressed: bool,
+        message_received: bool,
+        initial_frame: bool = False
+    ) -> np.ndarray:
+        """
+        Get suggested focal distribution based on view, cursor coordinates,
+        and entity positions.
+        """
+
+        # Get base highlights
+        if initial_frame:
+            focus = self.base_focus
+
+        elif space_pressed or message_received:
+            focus = self.chat_focus
+
+        elif sdgr.sim.view == GameID.VIEW_WORLD:
+            focus = self.hud_focus
+
+        elif sdgr.sim.view == GameID.VIEW_STORE:
+            focus = self.base_focus
+
+        else:
+            focus = self.chat_focus
+
+        # Get cursor highlight
+        std = 5. if sdgr.sim.view == GameID.VIEW_WORLD else 7.5
+        focus = focus + self.gaussian(
+            sdgr.sim.cursor_y//2., sdgr.sim.cursor_x//2., std=std, reduction=self.REDUCTION_TRUNC)
+
+        if sdgr.sim.view != GameID.VIEW_WORLD or initial_frame:
+            return focus / focus.sum()
+
+        # Get entity highlights
+        player = sdgr.session.players[sdgr.sim.observed_player_id]
+        pos = tuple(player.pos)
+        origin = tuple(player.d_pos_recoil + sdgr.sim.WORLD_FRAME_ORIGIN)
+        angle = player.angle + np.pi/2. + player.d_angle_recoil
+        world_warp = get_camera_warp(pos, angle, origin)
+
+        ent_focus = self.base_focus
+
+        for a_player in sdgr.session.players.values():
+            if sdgr.sim.check_los(player, a_player):
+                pos_x, pos_y = np.dot(world_warp, (*a_player.pos, 1.))
+
+                if 0. <= pos_y <= 107. and 0. <= pos_x <= 191.:
+                    ent_focus = ent_focus + self.gaussian(
+                        pos_y//2., 32. + pos_x//2., std=1., reduction=self.REDUCTION_NONE)
+
+        for an_object in sdgr.session.objects.values():
+            if sdgr.sim.check_los(player, an_object):
+                pos_x, pos_y = np.dot(world_warp, (*an_object.pos, 1.))
+
+                if 0. <= pos_y <= 107. and 0. <= pos_x <= 191.:
+                    ent_focus = ent_focus + self.gaussian(
+                        pos_y//2., 32. + pos_x//2., std=1., reduction=self.REDUCTION_NONE)
+
+        ent_focus_sum = ent_focus.sum()
+
+        if ent_focus_sum:
+            focus = focus + ent_focus / ent_focus_sum
+
         return focus / focus.sum()
 
-    # Get entity highlights
-    player = sdgr.session.players[sdgr.sim.observed_player_id]
-    pos = tuple(player.pos)
-    origin = tuple(player.d_pos_recoil + sdgr.sim.WORLD_FRAME_ORIGIN)
-    angle = player.angle + np.pi/2. + player.d_angle_recoil
-    world_warp = get_camera_warp(pos, angle, origin)
+    def get_focus(self, sdgr: SDGReplayClient, space: bool, frame_number: int) -> np.ndarray:
+        """Get suggested focal distribution."""
 
-    ent_focus = BASE_FOCUS
+        self.last_chat_lengths.append(len(sdgr.sim.chat) > self.last_chat_lengths[-1])
 
-    for a_player in sdgr.session.players.values():
-        if sdgr.sim.check_los(player, a_player):
-            pos_x, pos_y = np.dot(world_warp, (*a_player.pos, 1.))
+        return self.get_focal_distribution(
+            sdgr, space, self.last_chat_lengths.popleft(), initial_frame=(frame_number < 2*N_DELAYED_FRAMES))
 
-            if 0. <= pos_y <= 107. and 0. <= pos_x <= 191.:
-                ent_focus = ent_focus + gaussian(pos_y//2., 32. + pos_x//2., std=1., reduction=REDUCTION_NONE)
+    def sample_focus(self, focus: np.ndarray, slice_length: int, batch_size: int) -> np.ndarray:
+        """
+        Get indices of focal points by sampling from suggested probability
+        distributions. Sampled points can be held for a few consecutive frames.
 
-    for an_object in sdgr.session.objects.values():
-        if sdgr.sim.check_los(player, an_object):
-            pos_x, pos_y = np.dot(world_warp, (*an_object.pos, 1.))
+        NOTE: Sampling can cause a noticeable bottleneck in a training process.
+        Its complexity is determined by sequence length, batch size, and,
+        most heavily, image dimensions.
+        """
 
-            if 0. <= pos_y <= 107. and 0. <= pos_x <= 191.:
-                ent_focus = ent_focus + gaussian(pos_y//2., 32. + pos_x//2., std=1., reduction=REDUCTION_NONE)
+        # n, b, h, w -> n*b, h*w -> n*b, i -> n, b, i
+        focus = focus.reshape(slice_length*batch_size, self.FOCUS_HEIGHT*self.FOCUS_WIDTH)
+        focus = np.array([self.rng.choice(self.focus_indices, p=focus_i) for focus_i in focus])
+        focus = focus.reshape((slice_length, batch_size, 2))
 
-    ent_focus_sum = ent_focus.sum()
+        for n in range(1, slice_length):
+            mask = self.rng.uniform(size=batch_size) > self.FOCUS_HOLD_PROBA
+            focus[n] = np.where(mask[:, None], focus[n], focus[n-1])
 
-    if ent_focus_sum:
-        focus = focus + ent_focus / ent_focus_sum
+        return focus
 
-    return focus / focus.sum()
+    def dummy_sample(self, slice_length: int, batch_size: int):
+        """
+        Perform the same number of calls to the random number generator
+        as if focus were actually sampled.
+        """
+
+        _ = [self.rng.choice(self.focus_indices) for _ in range(slice_length * batch_size)]
+
+        for _ in range(1, slice_length):
+            _ = self.rng.uniform(size=batch_size)
 
 
 def parse_args() -> argparse.Namespace:
@@ -142,6 +206,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         '-k', '--sequence_key', type=int, required=True,
         help='Unique key by which the sequence source of the data will be identified.')
+
+    parser.add_argument(
+        '-f', '--focus_path', type=str, default=None, help='Path to a recording of focal coordinates.')
 
     parser.add_argument(
         '--seed', type=int, default=42,
@@ -174,6 +241,7 @@ def parse_args() -> argparse.Namespace:
 
 if __name__ == '__main__':
     args = parse_args()
+    args.focus_record = False
 
     assert os.path.exists(args.recording_path), 'No recording found on given path.'
     assert not os.path.exists(args.output_path), 'Output file already exists.'
@@ -198,7 +266,6 @@ if __name__ == '__main__':
 
     clk = None
     frame_number = 0
-    last_chat_lengths = deque(False for _ in range(N_DELAYED_FRAMES))
 
     while sdgr.recording and frame_number < frame_limit:
         clk = sdgr.manual_step(clk)
@@ -271,12 +338,8 @@ if __name__ == '__main__':
             action = action + num_cats + mmot_yrel_cats + mmot_xrel_cats + wheel_y_cats
             actions.append(action)
 
-            # Suggested focal distribution
-            focus = get_focal_distribution(
-                sdgr, bool(space), last_chat_lengths.popleft(), initial_frame=(frame_number < 2*N_DELAYED_FRAMES))
-
-            foci.append(focus)
-            last_chat_lengths.append(len(sdgr.sim.chat) > last_chat_lengths[-1])
+            if sdgr.focus.mode:
+                foci.append((sdgr.focus.y, sdgr.focus.x))
 
         # Image to [0, 1] range
         frames.append(sdgr.video_stream.popleft()[..., ::-1] / 255.)
@@ -330,7 +393,7 @@ if __name__ == '__main__':
     frames = np.array(frames, dtype=np.float32)
     spectra = np.array(spectra, dtype=np.float32)
     mkbd_states = np.array(mkbd_states, dtype=np.float32)
-    foci = np.array(foci, dtype=np.float32)
+    foci = np.array(foci, dtype=np.int32)
     cursor_y = np.array(cursor_y, dtype=np.int32)
     cursor_x = np.array(cursor_x, dtype=np.int32)
     actions = np.array(actions, dtype=np.float32)
@@ -359,7 +422,7 @@ if __name__ == '__main__':
         hf.create_dataset('image', data=frames, compression='gzip', compression_opts=4, chunks=(2, 1, 3, 144, 256))
         hf.create_dataset('spectrum', data=spectra, compression='gzip', compression_opts=4, chunks=(12, 1, 2, 64))
         hf.create_dataset('mkbd', data=mkbd_states, compression='gzip', compression_opts=4, chunks=(12, 1, 20))
-        hf.create_dataset('focus', data=foci, compression='gzip', compression_opts=4, chunks=(6, 1, 72, 128))
+        hf.create_dataset('focus', data=foci, compression='gzip', compression_opts=4, chunks=(12, 1, 2))
         hf.create_dataset('cursor', data=cursor_coords, compression='gzip', compression_opts=4, chunks=(12, 1, 2))
         hf.create_dataset('action', data=actions, compression='gzip', compression_opts=4, chunks=(12, 1, 72))
         hf.attrs['src'] = os.path.split(input_path)[-1]

@@ -2,10 +2,15 @@
 
 import os
 import json
+import struct
+from logging import Logger
 from time import asctime
 from typing import List, Tuple, Union
 import numpy as np
+from sidegame.graphics import draw_image
+from sidegame.networking.core import Recorder
 from sidegame.game.shared import GameID, Event, Map, Player, Session
+from sidegame.game.client.simulation import Simulation
 
 
 DATA_DIR: str = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..', 'user_data'))
@@ -580,3 +585,103 @@ class StatTracker:
             ('success_hold', tracked_scores['holds'] / max(1, tracked_scores['ct_rounds'])),
             ('success_retake', tracked_scores['retakes'] / max(1, tracked_scores['retake_rounds'])),
             ('success_ct_side', tracked_scores['ct_wins'] / max(1, tracked_scores['ct_rounds']))]
+
+
+class FocusTracker:
+    """
+    Keeps track of an alternative cursor during a replay, storing or redrawing
+    its position. Intended to highlight points of interest in a recording or
+    to manually label frames with approximate eye focus in real time
+    as a recording is replayed.
+
+    NOTE:
+    - The recording can be freely paused and sped up (or slowed down).
+    - Jumping forward with active labelling will cause some labels to be missed.
+    - Jumping backward will not remove labels that were already made.
+    """
+
+    MODE_NULL: int = 0
+    MODE_READ: int = 1
+    MODE_WRITE: int = 2
+
+    COLOUR_CYAN = np.array([235, 183, 0], dtype=np.uint8)
+    COLOUR_RED = np.array([0, 0, 224], dtype=np.uint8)
+
+    def __init__(self, path: str = None, mode: int = MODE_NULL, start_active: bool = False):
+        self.recorder = Recorder(file_path=path)
+        self.mode = self.MODE_NULL if path is None else mode
+
+        if self.mode == self.MODE_READ:
+            self.recorder.read()
+
+        self.icon_inactive = Simulation.load_image(None, 'icons', 'pointer_cursor.png')
+        self.icon_active = self.icon_inactive.copy()
+        self.icon_inactive[..., :3] = self.COLOUR_CYAN
+        self.icon_active[..., :3] = self.COLOUR_RED
+
+        self.y, self.x = Simulation.WORLD_FRAME_CENTRE
+        self.active = False if path is None else start_active
+        self.hidden = True
+
+    def update(self, yrel: float, xrel: float):
+        """Update focal coordinates according to relative movement."""
+
+        self.y = np.clip(self.y + yrel, 2., 141.)
+        self.x = np.clip(self.x + xrel, 2., 253.)
+
+    def register(self, window: np.ndarray, tick_counter: int):
+        """Draw focal cursor and log its position."""
+
+        if self.mode == self.MODE_NULL or (self.mode == self.MODE_READ and (not self.active or self.hidden)):
+            return
+
+        draw_image(window, self.icon_active if self.active else self.icon_inactive, round(self.y)-2, round(self.x)-2)
+
+        # Check for mode and rewind
+        if self.mode != self.MODE_WRITE or tick_counter < self.recorder.counter:
+            return
+
+        # Update meta
+        self.recorder.counter = tick_counter
+
+        data = struct.pack('>2fB', self.y, self.x, int(not self.active))
+        self.recorder.append(data)
+
+        # Cache and squeeze records
+        self.recorder.cache_chunks()
+        self.recorder.squeeze()
+
+    def finish(self, logger: Logger = None):
+        """Save logged focal coordinates."""
+
+        if self.mode != self.MODE_WRITE:
+            return
+
+        self.recorder.restore_chunks()
+        self.recorder.squeeze(all_=True)
+        self.recorder.save()
+
+        if logger is not None:
+            logger.info("Recording saved to: '%s'.", self.recorder.file_path)
+
+    def get(self, tick_counter: int):
+        """
+        Get the focal coordinates corresponding to the current replay tick.
+        If no correspondance is found (e.g. due to skipped frames when recording
+        focus), current coordinates are preserved.
+        """
+
+        if self.mode != self.MODE_READ:
+            return
+
+        while self.recorder.buffer:
+            (_, ctr, _), data = self.recorder.split_meta(self.recorder.buffer[0])
+
+            if ctr > tick_counter:
+                break
+
+            elif ctr == tick_counter:
+                self.y, self.x, hidden = struct.unpack('>2fB', data)
+                self.hidden = bool(hidden)
+
+            del self.recorder.buffer[0]
