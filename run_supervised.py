@@ -25,6 +25,8 @@ CENTRE_FOCUS_Y = (108/2) / 2
 CENTRE_FOCUS_X = (64 + 192/2) / 2
 INTERRUPT_CHECK_PERIOD = 1.
 MAIN_RANK = 0
+RANK_DELAY = 0.05
+MAX_DISP_SECONDS = 99*24*3600
 
 
 def parse_args() -> argparse.Namespace:
@@ -58,26 +60,37 @@ def parse_args() -> argparse.Namespace:
         help='Threshold above the severity of which the runtime messages are logged or displayed.')
 
     parser.add_argument(
-        '--lr_init', type=float, default=3e-4,
+        '--lr_init', type=float, default=8e-5,
         help='Initial learning rate in a scheduled cycle.')
     parser.add_argument(
-        '--lr_max', type=float, default=1e-2,
+        '--lr_max', type=float, default=8e-4,
         help='Peak learning rate in a scheduled cycle.')
     parser.add_argument(
-        '--lr_final', type=float, default=1e-6,
+        '--lr_final', type=float, default=4e-7,
         help='Final learning rate in a scheduled cycle.')
     parser.add_argument(
-        '--pct_start', type=float, default=0.3,
+        '--pct_start', type=float, default=0.125,
         help='Ratio of the cycle at which the learning rate should peak.')
     parser.add_argument(
-        '--beta1', type=float, default=0.9,
-        help='1st momentum-related parameter for the Adam optimiser.')
+        '--beta1', '--beta1_base', type=float, default=0.8,
+        help='(Base) 1st momentum-related parameter for the Adam optimiser.')
     parser.add_argument(
-        '--beta2', type=float, default=0.995,
+        '--beta1_max', type=float, default=0.9,
+        help='(Max) 1st momentum-related parameter for the Adam optimiser.')
+    parser.add_argument(
+        '--beta2', type=float, default=0.975,
         help='2nd momentum-related parameter for the Adam optimiser.')
     parser.add_argument(
-        '--weight_decay', type=float, default=1e-5,
+        '--weight_decay', type=float, default=4e-5,
         help='Regularisation parameter for the AdamW optimiser.')
+    parser.add_argument(
+        '--clip_grad_val', type=float, default=4.,
+        help='Bandaid to mitigate exploding gradients by clipping them per module/parameter on backward pass. '
+        'This distorts the gradients which can cause problems when propagated further.')
+    parser.add_argument(
+        '--clip_grad_norm', type=float, default=6.,
+        help='Bandaid to mitigate exploding gradients by limiting their collective magnitude. '
+        'As this is performed after backwarding, some gradients could have already exploded enough to cause issues.')
 
     parser.add_argument(
         '--pool_size', type=int, default=15,
@@ -86,16 +99,32 @@ def parse_args() -> argparse.Namespace:
         '--batch_size', type=int, default=12,
         help='Number of different sequences processed simultaneously per each training node.')
     parser.add_argument(
-        '--truncated_length', type=int, default=30,
-        help='Length of the longest differentiable sequence in epochwise BPTT.')
+        '--slice_length', '--update_interval', '--k1', type=int, default=30,
+        help='Number of steps between updates in epochwise TBPTT.')
     parser.add_argument(
-        '--decimation', type=int, default=6,
-        help='Determines several sub-sequence lengths in epochwise BPTT as its multiples, up to the truncated length. '
-        'If equal to truncated length, training regime becomes TBPTT with `k1 == k2`. '
-        'If set to 1, a backward pass will be made on every step, retaining graph until the last step in the sequence.')
+        '--truncated_length', '--k2', type=int, default=30,
+        help='Length of the longest differentiable sequence in epochwise TBPTT.')
     parser.add_argument(
-        '--steps', type=int, default=int(1e+5),
+        '--eval_stride', '--k3', type=int, default=1,
+        help='Number of steps between loss evaluation in epochwise TBPTT.')
+    parser.add_argument(
+        '--exp_length_on_reset', type=float, default=1.02,
+        help='Start with sub-sequences of `slice_length`, then exponentiate their length (with rounding) '
+        'to iteratively increase overall sequence length until they can be processed in full. '
+        'Intended to vary and decorrelate initial batches and corresponding updates.')
+    parser.add_argument(
+        '--reduce_sum', action='store_true',
+        help='Whether to reduce step-wise losses in epochwise TBPTT with summation or averaging.')
+
+    parser.add_argument(
+        '--steps', type=int, default=int(8e+4),
         help='Maximum number of steps within a training session.')
+    parser.add_argument(
+        '--mkbd_release_start', type=int, default=int(8e+3),
+        help='Step until which mouse/keyboard input is suppressed.')
+    parser.add_argument(
+        '--mkbd_release_steps', type=int, default=int(2e+3),
+        help='Number of steps over which mouse/keyboard input is increased to full value.')
     parser.add_argument(
         '--save_steps', type=int, default=250,
         help='Step interval for saving current model parameters.')
@@ -144,17 +173,18 @@ def run_imitation(
     Synchronise between processing nodes to train an AI model with behavioural
     cloning based on demonstrations extracted from SDG recordings.
 
-    Uses epochwise BPTT instead of TBPTT, decimating backwards ops to
-    approximate it for different `k1` and `k2`. Compared to TBPTT, gradients
-    will be less consistent, but it is simpler to code and more efficient to
-    execute (because only last states need to be tracked for detachment).
+    Uses epochwise TBPTT, with parameters `k1`, `k2`, and `k3`, which allow
+    epochwise BPTT (`k1==k2`, `k3==1`) and true TBPTT (`k1==k3`) as special
+    cases. Compared to true TBPTT, epochwise variants will propagate gradients
+    less consistently (a memory state can take part in `k3` to `k1` passes),
+    but should be more efficient due to fewer backward and update steps.
 
     Processing nodes can each be assigned a subset of available demonstration
     sequences. If the subsets overlap, there can be some redundancy in the
     computed gradients. If they are exclusive, there can be less variety
     in constructed batches (because a sequence is restricted to some node
-    and must progress chronologically, its frames will only be batched with
-    a handful of different others).
+    and must eventually progress chronologically, its frames may only be
+    batched with a handful of different others).
     """
 
     is_distributed = world_size > 1
@@ -185,6 +215,10 @@ def run_imitation(
 
     model = PCNet()
 
+    # Setup gradient clipping on backward pass
+    for parameter in model.parameters():
+        parameter.register_hook(lambda grad: grad.clamp_(-args.clip_grad_val, args.clip_grad_val))
+
     # Load weights from checkpoint if given
     if args.checkpoint_path is not None:
         model = model.load(args.checkpoint_path, device=device)
@@ -198,31 +232,29 @@ def run_imitation(
         model = DDP(model, device_ids=[], output_device=device)
 
     # Confirm weights are consistent by logging a checksum for some parameters
-    sleep(0.05 * rank)
+    sleep(RANK_DELAY * rank)
 
     with torch.no_grad():
         checksum = (model.module if is_distributed else model).motor_decoding.action_fc.weight.sum().item()
 
     logger.debug('Weight checksum: %f', checksum)
 
-    sleep(0.05 * world_size)
+    sleep(RANK_DELAY * world_size)
 
-    # Different seeds for sampling data
+    # NOTE: Different seeds for sampling data
+    # NOTE: `args.truncated_length` includes the remainder in the computational graph, determining place of detachment
     dataset = Dataset(
         data_files,
-        truncated_length=args.truncated_length,
+        slice_length=args.slice_length,
         max_steps_with_repeat=args.steps,
         max_batch_size=args.batch_size,
         resume_step=args.resume_step,
+        exp_length_on_reset=(args.exp_length_on_reset if args.exp_length_on_reset > 1. else None),
         seed=(args.seed + rank),
         device=device)
 
     init_focus = torch.tensor([CENTRE_FOCUS_Y, CENTRE_FOCUS_X], dtype=torch.long, device=device)
     delayed_foci = {seq.key: deque(init_focus for _ in range(N_DELAY)) for seq in dataset.sequences}
-
-    k2 = dataset.truncated_length
-    k1 = k2 // args.decimation
-    assert (k2 % k1) == 0, 'Final forward and backward steps must be synchronised.'
 
     writer = SummaryWriter(os.path.join(args.logdir, args.model_name + (f':{rank}' if is_distributed else '')))
 
@@ -237,6 +269,8 @@ def run_imitation(
         args.lr_max,
         total_steps=args.steps,
         pct_start=args.pct_start,
+        base_momentum=args.beta1,
+        max_momentum=args.beta1_max,
         div_factor=(args.lr_max/args.lr_init),
         final_div_factor=(args.lr_init/args.lr_final),
         last_epoch=-1)
@@ -252,6 +286,14 @@ def run_imitation(
     model_branch = 0
     running_train_loss = 0.
     last_train_loss = np.Inf
+    epoch_losses = deque()
+
+    k1 = args.slice_length
+    k2 = args.truncated_length
+    k3 = args.eval_stride
+
+    assert k1 <= k2 <= 2*k1, '`k2` must be (inclusively) between `k1` and `2*k1`.'
+    assert k3 <= k1, '`k3` must be less than or equal to `k1`'
 
     logger.debug('Training...')
 
@@ -259,11 +301,12 @@ def run_imitation(
         if termination_event.wait(0.):
             break
 
+        effective_step = args.resume_step + i
+
         # Print out progress
         if is_main:
-            effective_step = args.resume_step + i
             running_time = perf_counter() - start_time
-            remaining_time = min(int(running_time * (args.steps - effective_step) / i), 99*24*3600)
+            remaining_time = min(int(running_time * (args.steps - effective_step) / i), MAX_DISP_SECONDS)
 
             print(
                 f'\rStep {effective_step} of {args.steps}. Last score: {last_train_loss:.4f}. ETA: ' +
@@ -283,10 +326,20 @@ def run_imitation(
         # Reset accumulated gradients
         optimizer.zero_grad()
 
-        # Loop over the temporal dimension
+        # Unpack data
         (images, spectra, mkbds, foci, keys), actions = data
 
-        for j in range(k2):
+        # Suppress mouse/keyboard input at the start to emphasise learning of audio-visual layers
+        if effective_step < args.mkbd_release_start:
+            mkbds = mkbds * 0.
+
+        elif effective_step < (args.mkbd_release_start + args.mkbd_release_steps):
+            mkbds = mkbds * ((effective_step - args.mkbd_release_start) / args.mkbd_release_steps)
+
+        # Loop over the temporal dimension
+        # NOTE: `k1 == dataset.slice_length`
+        for j in range(k1):
+
             # Demo output
             demo_focus = foci[j]
             demo_action = actions[j]
@@ -302,27 +355,28 @@ def run_imitation(
             # Model output
             x_focus, x_action = model(images[j], spectra[j], mkbds[j], foci_j, keys[j])
 
-            # Compute loss and accumulate gradients
-            if not (j+1) % k1:
-                loss = supervised_loss(x_focus, x_action, demo_focus, demo_action)
+            # Compute loss and keep data in memory
+            if not (j+1) % k3:
+                epoch_losses.append(supervised_loss(x_focus, x_action, demo_focus, demo_action))
 
-                # Retain graph and hold off sync until the final backward operation
-                if (j+1) == k2:
-                    loss.backward()
+        # Get average or total loss
+        # NOTE: Sources apparently point to summation, but this makes the values high and dependant on batch size:
+        # https://stats.stackexchange.com/questions/219914/rnns-when-to-apply-bptt-and-or-update-weights/220111#220111
+        loss = torch.stack(tuple(epoch_losses)).sum() if args.reduce_sum else torch.stack(tuple(epoch_losses)).mean()
+        epoch_losses.clear()
 
-                elif is_distributed:
-                    with model.no_sync():
-                        loss.backward(retain_graph=True)
+        # Accumulate gradients and sync on backward pass
+        loss.backward()
 
-                else:
-                    loss.backward(retain_graph=True)
+        # Additional gradient manipulation
+        torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip_grad_norm)
 
         # Update model and learning schedule
         optimizer.step()
         scheduler.step()
 
         # Detach final (first) hidden/cell states of LSTM cells for TBPTT
-        (model.module if is_distributed else model).detach(keys=keys[-1])
+        (model.module if is_distributed else model).detach(keys=keys[-1], detach_idx=-(k2-k1+1))
 
         # Log running train loss
         running_train_loss += loss.item()
@@ -331,7 +385,7 @@ def run_imitation(
             last_train_loss = running_train_loss / args.log_steps
             running_train_loss = 0.
 
-            writer.add_scalar('imitation loss', last_train_loss, global_step=(args.resume_step + i))
+            writer.add_scalar('imitation loss', last_train_loss, global_step=effective_step)
 
         # Save model checkpoint
         if is_main and not i % args.branch_steps:

@@ -1,13 +1,16 @@
 """Utilities for PCNet, SDG AI actors, and training processes"""
 
 from collections import deque
-from typing import Deque, Hashable, Iterable, List, Tuple, Union
+from typing import Deque, Dict, Hashable, Iterable, List, Tuple, Union
 import numpy as np
 import h5py
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.multiprocessing import Lock
+
+
+DIVLOGPI = 1./np.log(np.pi)
 
 
 class ChainLock:
@@ -44,12 +47,106 @@ class ChainLock:
         self._free_locks.append(own_lock)
 
 
-def init_std(layer: Union[nn.Conv2d, nn.Conv1d], n_blocks: int = None, n_layers: int = 2) -> float:
+class StateStore:
+    """
+    Store for sequential states of dynamic combinations of multiple actors
+    (intended for distributed inference and TBPTT).
+    """
+
+    def __init__(self, dim: Union[int, Tuple[int]]):
+        self.batches: Deque[torch.Tensor] = deque()
+        self.states: Dict[Hashable, torch.Tensor] = {}
+        self.default = torch.zeros(dim)
+
+    def move(self, device: Union[str, torch.device]):
+        """
+        Move states to new device. This will start a new computational graph,
+        so current batches are cleared as well.
+        """
+
+        self.default = self.default.to(device=device)
+
+        for key in self.states.keys():
+            self.states[key] = self.states[key].to(device=device)
+
+        self.batches.clear()
+
+    def clear(self, keys: Iterable[Hashable] = None):
+        """
+        Clear states for a set of actors, in effect reverting them to the
+        initial/default state on subsequent gathering.
+        """
+
+        for key in tuple(self.states.keys()) if keys is None else keys:
+            del self.states[key]
+
+    def get(self, keys: Iterable[Hashable] = None) -> torch.Tensor:
+        """
+        Get the last batch of states for a set of actors or gather them into
+        an initial batch that is added to current buffer.
+        """
+
+        if not self.batches:
+            self.batches.append(
+                torch.stack(
+                    [self.states.get(key, self.default) for key in (self.states.keys() if keys is None else keys)]))
+
+        return self.batches[-1]
+
+    def append(self, states: torch.Tensor):
+        """Add new batch of states to current buffer."""
+
+        self.batches.append(states)
+
+    def detach(self, keys: Iterable[Hashable], detach_idx: int = -1):
+        """
+        Collectively detach the states from the computational graph at a given
+        point and clear the explicit buffer (tensors after the detached should
+        still be tracked in the background).
+
+        States to be preserved for the next iteration are extracted as views
+        of the final batch. Dividing batches into views and then stacking them
+        according to given keys allows keeping the graph state separately for
+        multiple actors.
+
+        NOTE: Whereas views themselves cannot be detached in-place to break
+        the computational graph per key, stacking creates a new tensor, which
+        can be used in their stead and then detached itself, as noted above.
+
+        NOTE: The source of the previous states should be part of the detached
+        graph, so their resources should be released when new states replace
+        them, as they are no longer referenced.
+        """
+
+        if not self.batches:
+            return
+
+        # Break computational graph at given batch
+        self.batches[detach_idx].detach_()
+
+        # Update states with views of the final batch
+        for key, state in zip(keys, self.batches[-1]):
+            self.states[key] = state
+
+        self.batches.clear()
+
+
+def get_n_params(model: nn.Module, trainable: bool = True) -> int:
+    """Get the number of (trainable) parameters in a given model."""
+
+    return sum(param.numel() for param in model.parameters() if (not trainable or param.requires_grad))
+
+
+def init_std(layer: Union[nn.Linear, nn.Conv2d, nn.Conv1d], n_blocks: int = None, n_layers: int = 2) -> float:
     """Get the standard deviation corresponding to He or Fixup initialisation."""
 
-    # He init
-    n_params = np.prod(layer.kernel_size) * layer.out_channels
-    std = np.sqrt(2. / n_params)
+    if isinstance(layer, nn.Linear):
+        std = 1. / np.sqrt(layer.out_features)
+
+    else:
+        # He init
+        n_params = np.prod(layer.kernel_size) * layer.out_channels
+        std = np.sqrt(2. / n_params)
 
     # Fixup init
     if n_blocks is not None:
@@ -82,6 +179,25 @@ def spatial_log_softmax(x: torch.Tensor) -> torch.Tensor:
     return x
 
 
+def symlog(x: torch.Tensor) -> torch.Tensor:
+    """
+    Symmetric logarithmic unit.
+    An attempt of saturated yet unbounded activation.
+    Divided by `log(pi)` to preserve derivative of `1` at `x == 0`.
+    """
+
+    return torch.log(torch.pow(x, 2) + np.pi) * torch.tanh(x) * DIVLOGPI
+
+
+def silog(x: torch.Tensor) -> torch.Tensor:
+    """
+    Sigmoid weighted logarithmic unit.
+    An attempt of saturated yet (positively) unbounded activation.
+    """
+
+    return symlog(x) * torch.sigmoid(x)
+
+
 def batch_crop(
     x: torch.Tensor,
     centre_indices: torch.Tensor,
@@ -98,6 +214,7 @@ def batch_crop(
     Expects odd crop lengths and images in BCHW format.
 
     NOTE: Padding makes things considerably slower.
+    NOTE: Cropping by indexing may cause unexpected form in GPU memory.
     """
 
     if padding:
@@ -151,25 +268,23 @@ def prepare_inputs(
     return x_visual, x_audio, x_mkbd, x_focus
 
 
-def get_n_params(model: nn.Module, trainable: bool = True) -> int:
-    """Get the number of (trainable) parameters in a given model."""
-
-    return sum(param.numel() for param in model.parameters() if (not trainable or param.requires_grad))
-
-
 def supervised_loss(
     x_focus: torch.Tensor,
     x_action: torch.Tensor,
     demo_focus: torch.Tensor,
     demo_action: torch.Tensor,
-    focal_weight: float = 0.1
+    fl_gamma: float = 2,
+    fl_alpha: float = 0.95
 ) -> torch.Tensor:
     """
-    Supervised loss function based on cross entropy (related to MLE and KL div).
+    Supervised loss function based on cross entropy (related to MLE and KL div)
+    with focal (loss) adjustment (not to be confused with the focal term)
+    and some 'class' imbalance compensation.
+
     Different terms are summed together and then averaged across the batch.
 
     NOTE: Due to unreliable pseudo-labels for focal coordinates, the focal term
-    is assigned a smaller weight.
+    is treated as an abundant class to be assigned a smaller weight.
 
     NOTE: Regularisation is omitted (handled by weight decay in the optimiser).
     """
@@ -184,11 +299,29 @@ def supervised_loss(
     x_focus = -spatial_log_softmax(x_focus)
 
     # Probabilities at demo focal indices are implicitly 1. and otherwise 0.
-    focal_term = torch.cat([x_focus[i:i+1, 0, y, x] for i, (y, x) in enumerate(demo_focus)]) * focal_weight
+    focal_term = torch.cat([x_focus[i:i+1, 0, y, x] for i, (y, x) in enumerate(demo_focus)])
     focal_term = focal_term[:, None]
 
     terms_per_sample = torch.cat((kbd_term, mvmt_y_term, mvmt_x_term, mwhl_y_term, focal_term), dim=1)
-    loss_per_sample = torch.sum(terms_per_sample, dim=1)
+
+    # Weights to prevent dominance of many null/still examples
+    focal_loss_weights = torch.pow(1. - torch.exp(-terms_per_sample), fl_gamma)
+
+    if fl_alpha == 0.5:
+        loss_per_sample = torch.sum(fl_alpha * focal_loss_weights * terms_per_sample, dim=1)
+
+    else:
+        focal_loss_alphas = torch.cat(
+            (
+                demo_action[:, :19],
+                demo_action[:, 31:32],
+                demo_action[:, 56:57],
+                demo_action[:, 70:71],
+                torch.zeros_like(focal_term)), dim=1)
+
+        focal_loss_alphas = focal_loss_alphas * fl_alpha + (1. - focal_loss_alphas) * (1. - fl_alpha)
+
+        loss_per_sample = torch.sum(focal_loss_alphas * focal_loss_weights * terms_per_sample, dim=1)
 
     return torch.mean(loss_per_sample)
 
@@ -197,17 +330,21 @@ class SequenceIterator:
     """
     Abstracts iteration over a collection of sequence arrays.
 
-    Iteration step is strict and determined by `slice_length`.
+    Iteration step is strict and determined by `slice_length`. Iteration ends
+    when reaching the final slice of a set of sequences, or, if length is
+    exponentiated on reset, the final slice of a set of current sub-sequences.
 
-    If `rng` is given, any iteration will start from a small random offset
-    (up to `slice_length`) so that, if backprop is only performed on final
-    samples in a temporal slice, all samples can eventually be in that place.
+    If `rng` is given, iterations will start from a small random offset
+    (up to `slice_length` or at sub-sequence starting index). This way,
+    if the loss, gradients, and/or updates are computed for samples
+    at a fixed interval, all samples can eventually be in that place.
     """
 
     def __init__(
         self,
         sequences: Tuple[Union[np.ndarray, h5py.Dataset]],
         slice_length: int = 1,
+        exp_length_on_reset: float = None,
         rng: np.random.Generator = None,
         key: Hashable = None
     ):
@@ -218,16 +355,29 @@ class SequenceIterator:
 
         self.slice_idx = 0
         self.slice_offset = 0
-        self.min_samples = min(len(seq) for seq in sequences)
-        self.max_slices = self.min_samples // slice_length
+        self.total_length = min(len(seq) for seq in sequences)
+        self.max_slices = self.total_length // slice_length
+
+        assert self.max_slices > 0, 'Not enough samples to construct a single slice.'
+
+        self.exp_length_ctr = 0
+        self.exp_length_on_reset = exp_length_on_reset
 
     def reset(self):
         """Set new random offset and restart the slice counter."""
 
+        max_length = self.total_length - self.slice_length
+
+        if self.exp_length_on_reset is not None:
+            max_length = min(max_length, int(self.slice_length * self.exp_length_on_reset ** self.exp_length_ctr))
+            self.exp_length_ctr += 1
+
         self.slice_idx = 0
-        self.slice_offset: int = 0 if self.rng is None else self.rng.integers(0, self.slice_length)
-        self.min_samples = min(len(seq) - self.slice_offset for seq in self.sequences)
-        self.max_slices = self.min_samples // self.slice_length
+        self.slice_offset: int = 0 if self.rng is None else self.rng.integers(0, self.total_length - max_length)
+        virtual_length = min(max_length, min(len(seq) - self.slice_offset for seq in self.sequences))
+        self.max_slices = virtual_length // self.slice_length
+
+        assert self.max_slices > 0, 'Not enough samples to construct a single slice.'
 
     def __len__(self) -> int:
         return self.max_slices - self.slice_idx
@@ -257,21 +407,18 @@ class Dataset:
     with the shortest sequence (lest batches change size).
     """
 
-    FOCUS_HEIGHT = 72
-    FOCUS_WIDTH = 128
-    FOCUS_HOLD_PROBA = 0.8
-
     def __init__(
         self,
         files: Iterable[h5py.File],
-        truncated_length: int = 16,
+        slice_length: int = 15,
         max_steps_with_repeat: int = 0,
         max_batch_size: int = None,
         resume_step: int = 0,
+        exp_length_on_reset: float = None,
         seed: int = None,
         device: torch.device = None
     ):
-        self.truncated_length = truncated_length
+        self.slice_length = slice_length
         self.max_steps_with_repeat = max_steps_with_repeat
         self.rng: np.random.Generator = np.random.default_rng(seed=seed)
         self.device = device
@@ -279,10 +426,6 @@ class Dataset:
 
         self.steps: int = None
         self.reset_keys: Deque[Hashable] = deque()
-        self.focus_indices = [
-            np.unravel_index(idx, (self.FOCUS_HEIGHT, self.FOCUS_WIDTH))
-            for idx in range(self.FOCUS_HEIGHT * self.FOCUS_WIDTH)]
-
         self.sequences: List[SequenceIterator] = []
 
         for file in files:
@@ -295,7 +438,8 @@ class Dataset:
                         file['focus'],
                         file['action'],
                         file.attrs['key'].repeat(file.attrs['len'])[:, None]),
-                    slice_length=self.truncated_length,
+                    slice_length=self.slice_length,
+                    exp_length_on_reset=exp_length_on_reset,
                     rng=self.rng,
                     key=file.attrs['key']))
 
@@ -318,27 +462,6 @@ class Dataset:
         self.reset()
         return self
 
-    def sample_focus(self, focus: np.ndarray) -> np.ndarray:
-        """
-        Get indices of focal points by sampling from suggested probability
-        distributions. Sampled points can be held for a few consecutive frames.
-
-        NOTE: Sampling can cause a noticeable bottleneck in a training process.
-        Its complexity is determined by sequence length, batch size, and,
-        most heavily, image dimensions.
-        """
-
-        # n, b, h, w -> n*b, h*w -> n*b, i -> n, b, i
-        focus = focus.reshape(self.truncated_length*self.batch_size, self.FOCUS_HEIGHT*self.FOCUS_WIDTH)
-        focus = np.array([self.rng.choice(self.focus_indices, p=focus_i) for focus_i in focus])
-        focus = focus.reshape((self.truncated_length, self.batch_size, 2))
-
-        for n in range(1, self.truncated_length):
-            mask = self.rng.uniform(size=self.batch_size) > self.FOCUS_HOLD_PROBA
-            focus[n] = np.where(mask[:, None], focus[n], focus[n-1])
-
-        return focus
-
     def get_batch(
         self,
         concurrent_slices: Iterable[Tuple[np.ndarray]]
@@ -355,7 +478,7 @@ class Dataset:
                 torch.as_tensor(np.concatenate(images, axis=1), device=self.device),
                 torch.as_tensor(np.concatenate(spectra, axis=1), device=self.device),
                 torch.as_tensor(np.concatenate(mkbds, axis=1), device=self.device),
-                torch.as_tensor(self.sample_focus(np.concatenate(foci, axis=1)), dtype=torch.long, device=self.device),
+                torch.as_tensor(np.concatenate(foci, axis=1)/2., dtype=torch.long, device=self.device),
                 np.concatenate(keys, axis=1)),
             torch.as_tensor(np.concatenate(actions, axis=1), device=self.device))
 
@@ -404,11 +527,6 @@ class Dataset:
                     next(self.sequences[seq_idx]) for seq_idx in self.rng.choice(
                         self.seq_indices, size=self.batch_size, replace=False, shuffle=False)]
 
-                _ = [self.rng.choice(self.focus_indices) for _ in range(self.truncated_length * self.batch_size)]
-
-                for _ in range(1, self.truncated_length):
-                    _ = self.rng.uniform(size=self.batch_size)
-
             elif self.max_steps_with_repeat:
                 for seq in self.sequences:
                     if not seq:
@@ -419,11 +537,6 @@ class Dataset:
                 _ = [
                     next(self.sequences[seq_idx]) for seq_idx in self.rng.choice(
                         self.seq_indices, size=self.batch_size, replace=False, shuffle=False)]
-
-                _ = [self.rng.choice(self.focus_indices) for _ in range(self.truncated_length * self.batch_size)]
-
-                for _ in range(1, self.truncated_length):
-                    _ = self.rng.uniform(size=self.batch_size)
 
             else:
                 break
