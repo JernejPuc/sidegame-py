@@ -361,7 +361,7 @@ class Explosive(Object):
         not fully behind it.
         """
 
-        if any(sdglib.trace_shot(self.owner.id, pos, self.pos, _map.height, _map.player_id)):
+        if any(sdglib.trace_shot(self.owner.id, pos, self.pos, _map.height, _map.player_id_null)):
             return 0.
 
         distance = np.linalg.norm(self.pos - pos)
