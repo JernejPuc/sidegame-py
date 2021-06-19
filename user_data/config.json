@@ -145,13 +145,12 @@
         "interp_ratio": 2.0,
 
         "role_key": "11111111",
-        "name": "trai",
+        "name": "slai",
         "mmr": 0.0,
 
         "device": "cpu",
-        "sample": false,
-        "space_bar": 0.8,
-        "e_bar": 0.625
+        "sampling_proba": 0.01,
+        "sampling_thr": 0.1
     },
 
     "ActorDev": {
@@ -168,13 +167,12 @@
         "interp_ratio": 2.0,
 
         "role_key": "11111111",
-        "name": "trai",
+        "name": "slai",
         "mmr": 0.0,
 
         "device": "cpu",
-        "sample": true,
-        "space_bar": 0.8,
-        "e_bar": 0.625
+        "sampling_proba": 0.01,
+        "sampling_thr": 0.1
     },
 
     "ActorRL": {
@@ -195,8 +193,7 @@
         "mmr": 1000.0,
 
         "device": "cuda",
-        "sample": true,
-        "space_bar": 0.8,
-        "e_bar": 0.625
+        "sampling_proba": 0.01,
+        "sampling_thr": 0.1
     }
 }

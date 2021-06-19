@@ -99,9 +99,8 @@ class SDGTrainedActor(SDGLiveClientBase):
         self.eps = 1e-12
         self.actor_keys = [self.own_entity.name]
 
-        self.sample: bool = args.sample
-        self.space_sampling_threshold = args.space_bar
-        self.e_sampling_threshold = args.e_bar
+        self.sampling_proba = args.sampling_proba
+        self.sampling_thr = args.sampling_thr
         self.cutout_centre_indices = (27, 80)
         self.mkbd_state = [0]*20
         self.space_time = 0.
@@ -143,13 +142,13 @@ class SDGTrainedActor(SDGLiveClientBase):
             t_action = self.action_queue.get(block=True, timeout=3.)
 
         except Empty:
-            pass
+            return self.NULL_STATE, log
 
         x_focus, x_action = t_action
         x_focus = spatial_softmax(x_focus)[0, 0]
         x_action = x_action[0].clone()
 
-        if self.sample:
+        if self.sampling_proba and self.sampling_proba == 1. or self.rng.random() < self.sampling_proba:
             self.cutout_centre_indices = np.unravel_index(Categorical(x_focus.view(-1)).sample(), x_focus.shape)
 
             kbd = torch.sigmoid(x_action[:19])
@@ -223,8 +222,8 @@ class SDGTrainedActor(SDGLiveClientBase):
 
         # To clear the message draft, space hold must not be interrupted
         # When sampling, semi-argmax is used to restrict sampling below a threshold
-        if self.sample and self.mkbd_state[self.MKBD_IDX_SPACE]:
-            space_argmax = x_action[2] >= self.space_sampling_threshold
+        if self.sampling_proba and self.mkbd_state[self.MKBD_IDX_SPACE]:
+            space_argmax = self.sampling_thr <= x_action[2] <= (1. - self.sampling_thr)
 
             if space_argmax:
                 space = 1
@@ -299,8 +298,8 @@ class SDGTrainedActor(SDGLiveClientBase):
         can_plant_or_defuse = hovered_id == GameID.ITEM_C4 or \
             (own_player.held_object is not None and own_player.held_object.item.id == GameID.ITEM_C4)
 
-        if self.sample and self.mkbd_state[self.MKBD_IDX_E] and can_plant_or_defuse:
-            ekey_argmax = x_action[3] >= self.e_sampling_threshold
+        if self.sampling_proba and self.mkbd_state[self.MKBD_IDX_E] and can_plant_or_defuse:
+            ekey_argmax = self.sampling_thr <= x_action[3] <= (1. - self.sampling_thr)
 
             if ekey_argmax:
                 ekey = 1
