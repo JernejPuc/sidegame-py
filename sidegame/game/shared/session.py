@@ -274,8 +274,12 @@ class Session:
 
         # NOTE: Waits for reset time to pass in all cases, never instantly shuts down or freezes
         elif self.phase == GameID.PHASE_RESET and self.time >= self.TIME_TO_RESET:
-            # Check for match end
+            # Check for victory
             if self.rounds_won_t == self.ROUNDS_TO_WIN or self.rounds_won_ct == self.ROUNDS_TO_WIN:
+                events.append(self.stop_match())
+
+            # Check for draw
+            elif self.rounds_won_t == self.ROUNDS_TO_SWITCH and self.rounds_won_ct == self.ROUNDS_TO_SWITCH:
                 events.append(self.stop_match())
 
             # Check for side reset
