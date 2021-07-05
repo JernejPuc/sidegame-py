@@ -121,6 +121,10 @@ class Player(Entity, PlayerEntity):
             if self.slots[slot] is not None:
                 self.slots[slot].reset_ammunition()
 
+        # Draw knife if held object was lost in transition (c4)
+        if self.slots[self.held_object.item.slot + self.held_object.item.subslot] is None:
+            self.draw(self.slots[Item.SLOT_KNIFE])
+
         # Reset decaying or queued variables
         self.queued_damage = 0.
         self.recent_damage_taken = 0.
