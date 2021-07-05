@@ -813,8 +813,16 @@ class SDGLiveClientBase(LiveClient):
                     player.time_off_trigger < player.held_object.item.use_interval)
 
                 if can_attack:
-                    events = player.attack(
-                        session.map.height, session.map.player_id, cursor_y, session.players, recoil=True)
+                    # NOTE: Prediction should not drop items, otherwise there can be a mismatch with the server
+                    # that might not be reconciled until death
+                    if player.held_object.item.slot == Item.SLOT_UTILITY:
+                        events = [Event(Event.FX_ATTACK, (player.id, player.held_object.item.id))]
+                        player.d_pos_recoil[1] += player.held_object.item.use_pos_offset
+                        player.d_angle_recoil += player.rng.normal(0., player.held_object.item.use_angle_std)
+
+                    else:
+                        events = player.attack(
+                            session.map.height, session.map.player_id, cursor_y, session.players, recoil=True)
 
                     player.time_off_trigger = 0.
 
