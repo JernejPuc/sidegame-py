@@ -26,7 +26,7 @@ class SDGLiveClient(SDGLiveClientBase):
     while a background thread feeds sound chunks into `pyaudio.Stream`.
     """
 
-    WINDOW_NAME = 'SiDeGame v2021-05-19'
+    WINDOW_NAME = 'SiDeGame v2021-06-21'
     RENDER_SIZE = (256, 144)
 
     # Tracked mouse/keyboard state indices
