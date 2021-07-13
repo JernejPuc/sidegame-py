@@ -1,94 +1,38 @@
 """Basic building blocks of PCNet components."""
 
 from typing import Hashable, Iterable, Tuple, Union
-import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.multiprocessing import Manager
 from sdgai.utils import StateStore, init_std, silog
 
 
-class XTraPool(nn.Module):
-    """
-    Expansive trainable pooling with pre-activation and Fixup-like initialisation.
+class GDWPool1d(nn.Module):
+    """Pooling (1D) with global depthwise kernels."""
 
-    It applies multiple strided depthwise convolutions per channel, followed by
-    projection, to pool with consideration for several spatial configurations.
-
-    Beyond reducing spatial dimensions, it can be used to address the final
-    stage of convolutional networks, by using an all-encompassing kernel and
-    pooling globally. Compared to the sequence of 1x1 conv. -> avg. pooling -> FC,
-    spatial relations are not completely disregarded, and compared to flattening
-    the final tensor and passing it through a linear layer, parameter counts can
-    be significantly lower, as well.
-    """
-
-    def __init__(
-        self,
-        in_channels: int,
-        out_channels: int,
-        kernel_size: Union[int, Tuple[int]],
-        stride: Union[int, Tuple[int]] = 1,
-        padding: Union[int, Tuple[int]] = 0,
-        padding_mode: str = 'zeros',
-        expansion_ratio: int = 5,
-        dim: int = 2,
-        preactivate: bool = True
-    ):
+    def __init__(self, in_channels: int, out_channels: int, width: int):
         super().__init__()
 
-        assert dim in (1, 2), f'`dim` must be 1 or 2, got {dim}.'
-
-        conv = nn.Conv2d if dim == 2 else nn.Conv1d
-        expanded_channels = int(in_channels * expansion_ratio)
-        self.preactivate = preactivate
-
-        # Activation
         self.silu = nn.SiLU()
+        self.expansion = nn.Conv1d(in_channels, out_channels, 1)
+        self.depthwise = nn.Conv1d(out_channels, out_channels, width, groups=out_channels)
 
-        # Residual components
-        self.multi_depthwise = conv(
-            in_channels,
-            expanded_channels,
-            kernel_size,
-            stride=stride,
-            padding=padding,
-            groups=in_channels,
-            bias=True,
-            padding_mode=padding_mode)
-
-        self.projection = conv(expanded_channels, out_channels, 1, bias=True)
-
-        # Fixup components
-        if preactivate:
-            self.pre_act_bias = nn.Parameter(torch.zeros((1, in_channels) + (1,)*dim))
-
-        else:
-            self.pre_act_bias = None
-
-        self.pre_mdw_bias = nn.Parameter(torch.zeros((1, in_channels) + (1,)*dim))
-        self.pre_proj_bias = nn.Parameter(torch.zeros((1, expanded_channels) + (1,)*dim))
-
-        nn.init.constant_(self.multi_depthwise.weight, 1./np.prod(self.multi_depthwise.kernel_size))
-        nn.init.normal_(self.projection.weight, mean=0., std=0.01)
-
-        nn.init.constant_(self.multi_depthwise.bias, 0.)
-        nn.init.constant_(self.projection.bias, 0.)
+        nn.init.normal_(self.expansion.weight, mean=0., std=init_std(self.expansion))
+        nn.init.normal_(self.depthwise.weight, mean=0., std=init_std(self.depthwise))
+        nn.init.constant_(self.expansion.bias, 0.)
+        nn.init.constant_(self.depthwise.bias, 0.)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if self.preactivate:
-            x = self.silu(x + self.pre_act_bias)
-
-        x = self.multi_depthwise(x + self.pre_mdw_bias)
-        x = self.silu(x)  # Bias included in mdw
-        x = self.projection(x + self.pre_proj_bias)
+        x = self.silu(self.expansion(x))
+        x = self.silu(self.depthwise(x))
 
         return x
 
 
-class FMBConv2d(nn.Module):
+class FMBConv(nn.Module):
     """
-    Fused MBConv2d block with optional squeeze and excitation, modified for
+    Fused MBConv block (without squeeze and excitation), modified for
     pre-activation and to use Fixup-like initialisation and parameters.
 
     Fixup multipliers and biases are added to main branches in residual
@@ -106,17 +50,23 @@ class FMBConv2d(nn.Module):
         self,
         in_channels: int,
         out_channels: int,
+        kernel_size: int,
+        padding: int = 1,
         padding_mode: str = 'zeros',
         downscale: bool = False,
-        expansion_ratio: int = 4,
-        squeeze_ratio: int = 0,
-        n_blocks: int = None
+        expansion_ratio: Union[int, float] = 2,
+        n_blocks: int = None,
+        dim: int = 2
     ):
         super().__init__()
 
         assert out_channels >= in_channels, \
             f'Cannot preserve identity with given channel mismatch: {in_channels} and {out_channels}.'
 
+        assert dim in (1, 2), f'`dim` must be 1 or 2, got {dim}.'
+
+        conv = nn.Conv2d if dim == 2 else nn.Conv1d
+        pool = nn.AvgPool2d if dim == 2 else nn.AvgPool1d
         exp_channels = int(in_channels * expansion_ratio)
 
         # Activation
@@ -124,288 +74,232 @@ class FMBConv2d(nn.Module):
 
         # Main components
         if downscale:
-            self.expansion = nn.Conv2d(
-                in_channels, exp_channels, 4, stride=2, padding=1, padding_mode=padding_mode, bias=True)
+            self.expansion = conv(
+                in_channels, exp_channels, kernel_size, stride=2, padding=padding, padding_mode=padding_mode)
 
-            self.id_avg = nn.AvgPool2d(2, stride=2)
+            self.id_avg = pool(2, stride=2)
 
         else:
-            self.expansion = nn.Conv2d(in_channels, exp_channels, 3, padding=1, padding_mode=padding_mode, bias=True)
+            self.expansion = conv(in_channels, exp_channels, kernel_size, padding=padding, padding_mode=padding_mode)
             self.id_avg = None
 
-        self.projection = nn.Conv2d(exp_channels, out_channels, 1, bias=False)
-
-        if out_channels != in_channels:
-            self.id_ext = nn.Conv2d(in_channels, out_channels-in_channels, 1, bias=False)
-
-        else:
-            self.id_ext = None
+        self.projection = conv(exp_channels, out_channels, 1, bias=False)
+        self.id_ext = (0, 0)*dim + (0, out_channels - in_channels) if out_channels != in_channels else None
 
         # Fixup components and init
-        self.pre_act_bias = nn.Parameter(torch.zeros(1, in_channels, 1, 1))
-        self.pre_exp_bias = nn.Parameter(torch.zeros(1, in_channels, 1, 1))
-        self.pre_proj_bias = nn.Parameter(torch.zeros(1, exp_channels, 1, 1))
-        self.id_scale = nn.Parameter(torch.ones(1, out_channels, 1, 1))
+        self.pre_act_bias = nn.Parameter(torch.zeros((1, in_channels) + (1,)*dim))
+        self.pre_exp_bias = nn.Parameter(torch.zeros((1, in_channels) + (1,)*dim))
+        self.pre_proj_bias = nn.Parameter(torch.zeros((1, exp_channels) + (1,)*dim))
+        self.id_scale = nn.Parameter(torch.ones((1, in_channels) + (1,)*dim))
 
         nn.init.normal_(self.expansion.weight, mean=0., std=init_std(self.expansion, n_blocks, n_layers=2))
         nn.init.constant_(self.expansion.bias, 0.)
         nn.init.constant_(self.projection.weight, 0.)
 
-        if self.id_ext is not None:
-            nn.init.normal_(self.id_ext.weight, mean=0., std=0.05)
-
-        # SE components
-        self.use_se = bool(squeeze_ratio)
-
-        if self.use_se:
-            squeezed_channels = int(exp_channels // squeeze_ratio)
-
-            self.sigmoid = nn.Sigmoid()
-            self.squeeze = nn.Conv2d(exp_channels, squeezed_channels, 1, bias=True)
-            self.excitation = nn.Conv2d(squeezed_channels, exp_channels, 1, bias=True)
-
-            nn.init.normal_(self.squeeze.weight, mean=0., std=0.03)
-            nn.init.normal_(self.excitation.weight, mean=0., std=0.03)
-
-        else:
-            self.sigmoid = None
-            self.squeeze = None
-            self.excite = None
-
     def forward(self, x):
-        x_preact = self.silu(x + self.pre_act_bias) + self.pre_exp_bias
-        x_res = self.expansion(x_preact)  # Bias in x_preact
+        x_res = self.silu(x + self.pre_act_bias)
+        x_res = self.expansion(x_res + self.pre_exp_bias)
         x_res = self.silu(x_res)  # Bias in expansion
-
-        if self.use_se:
-            # Depthwise global average pooling
-            x_se = torch.mean(x_res, dim=(2, 3), keepdim=True)
-
-            # Pointwise squeeze and excitation
-            x_se = self.squeeze(x_se)
-            x_se = self.silu(x_se)
-            x_se = self.excitation(x_se)
-
-            # Pointwise gating
-            x_res = x_res * self.sigmoid(x_se)
-
         x_res = self.projection(x_res + self.pre_proj_bias)
 
         # Modify identity to allow addition
         if self.id_avg is not None:
             x = self.id_avg(x)
 
+        x = x * self.id_scale
+
         if self.id_ext is not None:
-            x_preact = x_preact if self.id_avg is None else self.id_avg(x_preact)
-            x_ext = self.id_ext(x_preact)  # Bias in x_preact
-            x = torch.cat((x, x_ext), dim=1)
+            x = F.pad(x, self.id_ext)
 
-        return x * self.id_scale + x_res
+        return x + x_res
 
 
-class SEResBlock2d(nn.Module):
+class BResBlock(nn.Module):
     """
-    Basic residual block with optional squeeze and excitation, modified for
-    pre-activation and to use Fixup-like initialisation and parameters.
+    Bottleneck residual block, modified for pre-activation and to use
+    Fixup-like initialisation and parameters.
     """
 
     def __init__(
         self,
         in_channels: int,
-        out_channels: int,
+        mid_channels: int,
         padding_mode: str = 'zeros',
         downscale: bool = False,
-        squeeze_ratio: bool = 0,
         n_blocks: int = None
     ):
         super().__init__()
-
-        assert out_channels >= in_channels, \
-            f'Cannot preserve identity with given channel mismatch: {in_channels} and {out_channels}.'
 
         # Activation
         self.silu = nn.SiLU()
 
         # Main components
-        self.conv1 = nn.Conv2d(in_channels, in_channels, 3, padding=1, padding_mode=padding_mode, bias=True)
+        self.conv1 = nn.Conv2d(in_channels, mid_channels, 1)
+        self.conv3 = nn.Conv2d(mid_channels, in_channels, 1, bias=False)
 
         if downscale:
             self.conv2 = nn.Conv2d(
-                in_channels, out_channels, 4, stride=2, padding=1, padding_mode=padding_mode, bias=False)
+                mid_channels, mid_channels, 4, stride=2, padding=1, padding_mode=padding_mode)
 
             self.id_avg = nn.AvgPool2d(2, stride=2)
 
         else:
-            self.conv2 = nn.Conv2d(in_channels, out_channels, 3, padding=1, padding_mode=padding_mode, bias=False)
+            self.conv2 = nn.Conv2d(mid_channels, mid_channels, 3, padding=1, padding_mode=padding_mode)
             self.id_avg = None
-
-        if out_channels != in_channels:
-            self.id_ext = nn.Conv2d(in_channels, out_channels-in_channels, 1, bias=False)
-
-        else:
-            self.id_ext = None
 
         # Fixup components and init
         self.pre_act_bias = nn.Parameter(torch.zeros(1, in_channels, 1, 1))
         self.pre_conv1_bias = nn.Parameter(torch.zeros(1, in_channels, 1, 1))
-        self.pre_conv2_bias = nn.Parameter(torch.zeros(1, in_channels, 1, 1))
-        self.id_scale = nn.Parameter(torch.ones(1, out_channels, 1, 1))
+        self.pre_conv2_bias = nn.Parameter(torch.zeros(1, mid_channels, 1, 1))
+        self.pre_conv3_bias = nn.Parameter(torch.zeros(1, mid_channels, 1, 1))
+        self.id_scale = nn.Parameter(torch.ones(1, in_channels, 1, 1))
 
-        nn.init.normal_(self.conv1.weight, mean=0., std=init_std(self.conv1, n_blocks=n_blocks))
+        nn.init.normal_(self.conv1.weight, mean=0., std=init_std(self.conv1, n_blocks=n_blocks, n_layers=3))
+        nn.init.normal_(self.conv2.weight, mean=0., std=init_std(self.conv2, n_blocks=n_blocks, n_layers=3))
+        nn.init.constant_(self.conv3.weight, 0.)
         nn.init.constant_(self.conv1.bias, 0.)
-        nn.init.constant_(self.conv2.weight, 0.)
+        nn.init.constant_(self.conv2.bias, 0.)
 
-        if self.id_ext is not None:
-            nn.init.normal_(self.id_ext.weight, mean=0., std=0.05)
-
-        # SE components
-        self.use_se = bool(squeeze_ratio)
-
-        if self.use_se:
-            self.sigmoid = nn.Sigmoid()
-            self.squeeze = nn.Conv2d(out_channels, out_channels // squeeze_ratio, 1, bias=True)
-            self.excite = nn.Conv2d(out_channels // squeeze_ratio, out_channels, 1, bias=True)
-
-            nn.init.normal_(self.squeeze.weight, mean=0., std=0.03)
-            nn.init.normal_(self.excite.weight, mean=0., std=0.03)
-
-        else:
-            self.sigmoid = None
-            self.squeeze = None
-            self.excite = None
-
-    def forward(self, x):
-        x_preact = self.silu(x + self.pre_act_bias) + self.pre_conv1_bias
-        x_res = self.conv1(x_preact)  # Bias in x_preact
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x_res = self.silu(x + self.pre_act_bias)
+        x_res = self.conv1(x_res + self.pre_conv1_bias)
         x_res = self.silu(x_res)  # Bias in conv1
         x_res = self.conv2(x_res + self.pre_conv2_bias)
-
-        if self.use_se:
-            # Depthwise global average pooling
-            x_se = torch.mean(x_res, dim=(2, 3), keepdim=True)
-
-            # Pointwise squeeze and excitation
-            x_se = self.squeeze(x_se)
-            x_se = self.silu(x_se)
-            x_se = self.excite(x_se)
-
-            # Pointwise gating
-            x_res = x_res * self.sigmoid(x_se)
+        x_res = self.silu(x_res)  # Bias in conv2
+        x_res = self.conv3(x_res + self.pre_conv3_bias)
 
         # Modify identity to allow addition
         if self.id_avg is not None:
             x = self.id_avg(x)
 
-        if self.id_ext is not None:
-            x_preact = x_preact if self.id_avg is None else self.id_avg(x_preact)
-            x_ext = self.id_ext(x_preact)  # Bias in x_preact
-            x = torch.cat((x, x_ext), dim=1)
-
         return x * self.id_scale + x_res
 
 
-class SEResBlock1d(nn.Module):
-    """
-    Basic residual block with optional squeeze and excitation, modified for
-    pre-activation and to use Fixup-like initialisation and parameters.
-    """
+class PosConv(nn.Module):
+    """1x1 convolution with positional embeddings."""
 
     def __init__(
         self,
         in_channels: int,
         out_channels: int,
-        padding_mode: str = 'replicate',
-        downscale: bool = False,
-        squeeze_ratio: bool = 0,
+        height: int,
+        width: int,
+        preactivate: bool = True
+    ):
+        super().__init__()
+
+        self.pos_embeddings_h = nn.Parameter(torch.zeros(1, in_channels, height, 1))
+        self.pos_embeddings_w = nn.Parameter(torch.zeros(1, in_channels, 1, width))
+
+        self.conv = nn.Conv2d(in_channels, out_channels, 1)
+        nn.init.normal_(self.conv.weight, mean=0., std=init_std(self.conv))
+        nn.init.constant_(self.conv.bias, 0.)
+
+        self.silu = nn.SiLU()
+        self.preactivate = preactivate
+        self.pre_act_bias = nn.Parameter(torch.zeros(1, in_channels, 1, 1)) if preactivate else None
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self.preactivate:
+            x = self.silu(x + self.pre_act_bias)
+
+        x = x + self.pos_embeddings_h + self.pos_embeddings_w
+        x = self.conv(x)
+        x = self.silu(x)
+
+        return x
+
+
+class SASAtten(nn.Module):
+    """
+    Residual (inv.) bottleneck block with stand-alone self-attention,
+    pre-activation, and Fixup-like initialisation.
+    """
+
+    def __init__(
+        self,
+        in_channels: int,
+        exp_channels: int,
+        height: int,
+        width: int,
+        n_heads: int = 1,
         n_blocks: int = None
     ):
         super().__init__()
 
-        assert out_channels >= in_channels, \
-            f'Cannot preserve identity with given channel mismatch: {in_channels} and {out_channels}.'
+        self.height = height
+        self.width = width
+        self.feat_size = exp_channels
+        exp_channels = self.feat_size * 3
+        self.head_size = self.feat_size // n_heads
+        self.n_heads = n_heads
+
+        assert not (self.feat_size % n_heads), 'Expanded feature size must be divisible by `n_heads`.'
 
         # Activation
         self.silu = nn.SiLU()
 
         # Main components
-        self.conv1 = nn.Conv1d(in_channels, in_channels, 3, padding=1, padding_mode=padding_mode, bias=True)
+        self.qkv_extraction = nn.Conv2d(in_channels, exp_channels, 1, bias=True)
+        self.projection = nn.Conv2d(self.feat_size, in_channels, 1, bias=False)
 
-        if downscale:
-            self.conv2 = nn.Conv1d(
-                in_channels, out_channels, 4, stride=2, padding=1, padding_mode=padding_mode, bias=False)
+        self.pos_embeddings_q_h = nn.Parameter(torch.zeros(1, self.feat_size, self.height, 1))
+        self.pos_embeddings_q_w = nn.Parameter(torch.zeros(1, self.feat_size, 1, self.width))
+        self.pos_embeddings_k_h = nn.Parameter(torch.zeros(1, self.feat_size, self.height, 1))
+        self.pos_embeddings_k_w = nn.Parameter(torch.zeros(1, self.feat_size, 1, self.width))
+        self.dot_scale = self.head_size**0.5
 
-            self.id_avg = nn.AvgPool1d(2, stride=2)
+        # Fixup components
+        self.pre_act_bias = nn.Parameter(torch.zeros(1, in_channels, 1, 1))
+        self.pre_qkv_bias = nn.Parameter(torch.zeros(1, in_channels, 1, 1))
+        self.pre_proj_bias = nn.Parameter(torch.zeros(1, self.feat_size, 1, 1))
+        self.id_scale = nn.Parameter(torch.ones(1, in_channels, 1, 1))
 
-        else:
-            self.conv2 = nn.Conv1d(in_channels, out_channels, 3, padding=1, padding_mode=padding_mode, bias=False)
-            self.id_avg = None
+        # Fixup init
+        nn.init.normal_(self.qkv_extraction.weight, mean=0., std=init_std(self.qkv_extraction, n_blocks, n_layers=3))
+        nn.init.constant_(self.qkv_extraction.bias, 0.)
+        nn.init.constant_(self.projection.weight, 0.)
 
-        if out_channels != in_channels:
-            self.id_ext = nn.Conv1d(in_channels, out_channels-in_channels, 1, bias=False)
+    def attention(self, x: torch.Tensor) -> torch.Tensor:
+        """Multi-headed scaled dot product global self-attention."""
 
-        else:
-            self.id_ext = None
+        # Extract queries, keys, and values
+        q, k, v = torch.split(x, self.feat_size, dim=1)
 
-        # Fixup components and init
-        self.pre_act_bias = nn.Parameter(torch.zeros(1, in_channels, 1))
-        self.pre_conv1_bias = nn.Parameter(torch.zeros(1, in_channels, 1))
-        self.pre_conv2_bias = nn.Parameter(torch.zeros(1, in_channels, 1))
-        self.id_scale = nn.Parameter(torch.ones(1, out_channels, 1))
+        # Add absolute positional embeddings
+        q = q + self.pos_embeddings_q_h + self.pos_embeddings_q_w
+        k = k + self.pos_embeddings_k_h + self.pos_embeddings_k_w
 
-        nn.init.normal_(self.conv1.weight, mean=0., std=init_std(self.conv1, n_blocks=n_blocks))
-        nn.init.constant_(self.conv1.bias, 0.)
-        nn.init.constant_(self.conv2.weight, 0.)
+        # Reshape for matrix operations
+        b = x.shape[0]
 
-        if self.id_ext is not None:
-            nn.init.normal_(self.id_ext.weight, mean=0., std=0.05)
+        q = q.view(b, self.n_heads, self.head_size, self.height*self.width)
+        k = k.view(b, self.n_heads, self.head_size, self.height*self.width)
+        v = v.view(b, self.n_heads, self.head_size, self.height*self.width)
 
-        # SE components
-        self.use_se = bool(squeeze_ratio)
+        # b, n, c//n, hw, hw
+        logits = torch.matmul(q, torch.transpose(k, 2, 3)) / self.dot_scale
+        weights = F.softmax(logits, dim=-1)
 
-        if self.use_se:
-            self.sigmoid = nn.Sigmoid()
-            self.squeeze = nn.Conv1d(out_channels, out_channels // squeeze_ratio, 1, bias=True)
-            self.excite = nn.Conv1d(out_channels // squeeze_ratio, out_channels, 1, bias=True)
+        # b, n, c//n, hw
+        v = torch.matmul(weights, v)
+        v = v.view(b, self.feat_size, self.height, self.width)
 
-            nn.init.normal_(self.squeeze.weight, mean=0., std=0.03)
-            nn.init.normal_(self.excite.weight, mean=0., std=0.03)
+        return v
 
-        else:
-            self.sigmoid = None
-            self.squeeze = None
-            self.excite = None
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x_res = self.silu(x + self.pre_act_bias)
+        x_res = self.qkv_extraction(x_res + self.pre_qkv_bias)
 
-    def forward(self, x):
-        x_preact = self.silu(x + self.pre_act_bias) + self.pre_conv1_bias
-        x_res = self.conv1(x_preact)  # Bias in x_preact
-        x_res = self.silu(x_res)  # Bias in conv1
-        x_res = self.conv2(x_res + self.pre_conv2_bias)
+        x_res = self.attention(x_res)  # Bias in qkv
+        # Role of activation satisfied by mult. with softmax in film_attention
 
-        if self.use_se:
-            # Depthwise global average pooling
-            x_se = torch.mean(x_res, dim=2, keepdim=True)
-
-            # Pointwise squeeze and excitation
-            x_se = self.squeeze(x_se)
-            x_se = self.silu(x_se)
-            x_se = self.excite(x_se)
-
-            # Pointwise gating
-            x_res = x_res * self.sigmoid(x_se)
-
-        # Modify identity to allow addition
-        if self.id_avg is not None:
-            x = self.id_avg(x)
-
-        if self.id_ext is not None:
-            x_preact = x_preact if self.id_avg is None else self.id_avg(x_preact)
-            x_ext = self.id_ext(x_preact)  # Bias in x_preact
-            x = torch.cat((x, x_ext), dim=1)
+        x_res = self.projection(x_res + self.pre_proj_bias)
 
         return x * self.id_scale + x_res
 
 
-class FiLMAtten2d(nn.Module):
+class FiLMAtten(nn.Module):
     """
     Dense block (uses concatenation instead of residual addition) with
     pre-activation and externally modulated attention.
@@ -449,7 +343,7 @@ class FiLMAtten2d(nn.Module):
         self.pre_qkv_bias = nn.Parameter(torch.zeros(1, in_channels, 1, 1))
 
         # Fixup init
-        nn.init.normal_(self.qkv_extraction.weight, mean=0., std=0.05)
+        nn.init.normal_(self.qkv_extraction.weight, mean=0., std=init_std(self.qkv_extraction))
         nn.init.constant_(self.qkv_extraction.bias, 0.)
 
     def film_attention(self, x: torch.Tensor, mod_multiplier: torch.Tensor, mod_bias: torch.Tensor) -> torch.Tensor:
@@ -483,8 +377,8 @@ class FiLMAtten2d(nn.Module):
         return v
 
     def forward(self, x: torch.Tensor, mod_multiplier: torch.Tensor, mod_bias: torch.Tensor) -> torch.Tensor:
-        x_preact = self.silu(x + self.pre_act_bias) + self.pre_qkv_bias
-        x_res = self.qkv_extraction(x_preact)  # Bias in x_preact
+        x_preact = self.silu(x + self.pre_act_bias)
+        x_res = self.qkv_extraction(x_preact + self.pre_qkv_bias)
 
         x_res = self.film_attention(x_res, mod_multiplier, mod_bias)  # Bias in qkv
         # Role of activation satisfied by mult. with softmax in film_attention
@@ -492,10 +386,10 @@ class FiLMAtten2d(nn.Module):
         return torch.cat((x_preact, x_res), dim=1)
 
 
-class IRLinearCell(nn.Module):
+class IRCell(nn.Module):
     """
     Multi-actor implementation of an independently recurrent neural cell (2 layers)
-    with linear processing of inputs and custom (log-like) activation.
+    with custom (log-like) activation.
 
     By specifying keys corresponding to different actor instances, concurrent or
     otherwise, associated hidden states can be kept, retrieved, and updated
@@ -511,26 +405,43 @@ class IRLinearCell(nn.Module):
     - https://arxiv.org/abs/1910.06251
     """
 
-    def __init__(self, input_size: int, hidden_size: int):
+    def __init__(
+        self,
+        op1: Union[nn.Linear, nn.Conv1d, nn.Conv2d],
+        op2: Union[nn.Linear, nn.Conv1d, nn.Conv2d],
+        u1: nn.Parameter,
+        u2: nn.Parameter,
+        hidden_dim: Union[int, Tuple[int]],
+        manager: Manager = None
+    ):
         super().__init__()
 
         self.activation = silog
+        self.op1 = op1
+        self.op2 = op2
+        self.u1 = u1
+        self.u2 = u2
 
-        self.fc1 = nn.Linear(input_size, hidden_size, bias=True)
-        self.u1 = nn.Parameter(torch.empty(1, hidden_size))
+        self.store_1 = StateStore(hidden_dim, manager=manager)
+        self.store_2 = StateStore(hidden_dim, manager=manager)
 
-        self.fc2 = nn.Linear(hidden_size, hidden_size, bias=True)
-        self.u2 = nn.Parameter(torch.empty(1, hidden_size))
+    def clear(self, keys: Iterable[Hashable] = None):
+        """Clear final (first) hidden states of both recurrent layers."""
 
-        nn.init.normal_(self.fc1.weight, mean=0., std=0.01)
-        nn.init.normal_(self.fc2.weight, mean=0., std=0.01)
-        nn.init.constant_(self.fc1.bias, 0.)
-        nn.init.constant_(self.fc2.bias, 0.)
-        nn.init.uniform_(self.u1, a=0., b=1.)
-        nn.init.uniform_(self.u2, a=0., b=1.)
+        self.store_1.clear(keys=keys)
+        self.store_2.clear(keys=keys)
 
-        self.store_1 = StateStore(hidden_size)
-        self.store_2 = StateStore(hidden_size)
+    def detach(self, keys: Iterable[Hashable] = None):
+        """Detach final (first) hidden states of both recurrent layers."""
+
+        self.store_1.detach(keys=keys)
+        self.store_2.detach(keys=keys)
+
+    def move(self, device: Union[str, torch.device]):
+        """Move initial/default states to new device."""
+
+        self.store_1.move(device)
+        self.store_2.move(device)
 
     def forward(self, x: torch.Tensor, keys: Iterable[Hashable]) -> torch.Tensor:
         # Load recurrent states
@@ -538,8 +449,8 @@ class IRLinearCell(nn.Module):
         hidden_states_2 = self.store_2.get(keys=keys)
 
         # Infer new recurrent states
-        hidden_states_1 = self.activation(self.fc1(x) + self.u1 * hidden_states_1)
-        hidden_states_2 = self.activation(self.fc2(hidden_states_1) + self.u2 * hidden_states_2)
+        hidden_states_1 = self.activation(self.op1(x) + self.u1 * hidden_states_1)
+        hidden_states_2 = self.activation(self.op2(hidden_states_1) + self.u2 * hidden_states_2)
 
         # Save new recurrent states
         self.store_1.append(hidden_states_1)
@@ -548,10 +459,37 @@ class IRLinearCell(nn.Module):
         return hidden_states_2
 
 
-class IRConv2dCell(nn.Module):
+class IRLinearCell(IRCell):
+    """
+    Multi-actor implementation of an independently recurrent neural cell (2 layers)
+    with linear processing of inputs and custom (log-like) activation.
+    """
+
+    def __init__(self, input_size: int, hidden_size: int, manager: Manager = None):
+        fc1 = nn.Linear(input_size, hidden_size, bias=True)
+        fc2 = nn.Linear(hidden_size, hidden_size, bias=True)
+        u1 = nn.Parameter(torch.empty(1, hidden_size))
+        u2 = nn.Parameter(torch.empty(1, hidden_size))
+
+        nn.init.normal_(fc1.weight, mean=0., std=init_std(fc1))
+        nn.init.normal_(fc2.weight, mean=0., std=init_std(fc2))
+        nn.init.constant_(fc1.bias, 0.)
+        nn.init.constant_(fc2.bias, 0.)
+        nn.init.uniform_(u1, a=0., b=1.)
+        nn.init.uniform_(u2, a=0., b=1.)
+
+        super().__init__(fc1, fc2, u1, u2, hidden_size, manager=manager)
+
+
+class IRConv2dCell(IRCell):
     """
     Multi-actor implementation of an independently recurrent neural cell (2 layers)
     with (2D) convolution of inputs and custom (log-like) activation.
+
+    NOTE: Unlike its linear counterpart, conv cells are intended for encoding,
+    where shorter time frames are preferred and spatial distinctions should not
+    be randomly variant at the start. Thus, temporal retention is initialised to
+    a smaller constant.
     """
 
     def __init__(
@@ -562,12 +500,9 @@ class IRConv2dCell(nn.Module):
         height: int,
         width: int,
         padding_mode: str = 'zeros',
+        manager: Manager = None
     ):
-        super().__init__()
-
-        self.activation = silog
-
-        self.conv_1 = nn.Conv2d(
+        conv_1 = nn.Conv2d(
             input_size,
             hidden_size,
             kernel_size,
@@ -575,7 +510,7 @@ class IRConv2dCell(nn.Module):
             bias=True,
             padding_mode=padding_mode)
 
-        self.conv_2 = nn.Conv2d(
+        conv_2 = nn.Conv2d(
             hidden_size,
             hidden_size,
             kernel_size,
@@ -583,30 +518,63 @@ class IRConv2dCell(nn.Module):
             bias=True,
             padding_mode=padding_mode)
 
-        self.u1 = nn.Parameter(torch.empty(1, hidden_size, height, width))
-        self.u2 = nn.Parameter(torch.empty(1, hidden_size, height, width))
+        u1 = nn.Parameter(torch.empty(1, hidden_size, height, width))
+        u2 = nn.Parameter(torch.empty(1, hidden_size, height, width))
 
-        nn.init.normal_(self.conv_1.weight, mean=0., std=0.01)
-        nn.init.normal_(self.conv_2.weight, mean=0., std=0.01)
-        nn.init.constant_(self.conv_1.bias, 0.)
-        nn.init.constant_(self.conv_2.bias, 0.)
-        nn.init.constant_(self.u1, 0.5)
-        nn.init.constant_(self.u2, 0.5)
+        nn.init.normal_(conv_1.weight, mean=0., std=init_std(conv_1))
+        nn.init.normal_(conv_2.weight, mean=0., std=init_std(conv_2))
+        nn.init.constant_(conv_1.bias, 0.)
+        nn.init.constant_(conv_2.bias, 0.)
+        nn.init.constant_(u1, 0.5)
+        nn.init.constant_(u2, 0.5)
 
-        self.store_1 = StateStore((hidden_size, height, width))
-        self.store_2 = StateStore((hidden_size, height, width))
+        super().__init__(conv_1, conv_2, u1, u2, (hidden_size, height, width), manager=manager)
 
-    def forward(self, x: torch.Tensor, keys: Iterable[Hashable]) -> torch.Tensor:
-        # Load recurrent states
-        hidden_states_1 = self.store_1.get(keys=keys)
-        hidden_states_2 = self.store_2.get(keys=keys)
 
-        # Infer new recurrent states
-        hidden_states_1 = self.activation(self.conv_1(x) + self.u1 * hidden_states_1)
-        hidden_states_2 = self.activation(self.conv_2(hidden_states_1) + self.u2 * hidden_states_2)
+class IRConv1dCell(IRCell):
+    """
+    Multi-actor implementation of an independently recurrent neural cell (2 layers)
+    with (1D) convolution of inputs and custom (log-like) activation.
 
-        # Save new recurrent states
-        self.store_1.append(hidden_states_1)
-        self.store_2.append(hidden_states_2)
+    NOTE: Unlike its linear counterpart, conv cells are intended for encoding,
+    where shorter time frames are preferred and spatial distinctions should not
+    be randomly variant at the start. Thus, temporal retention is initialised to
+    a smaller constant.
+    """
 
-        return hidden_states_2
+    def __init__(
+        self,
+        input_size: int,
+        hidden_size: int,
+        kernel_size: int,
+        width: int,
+        padding_mode: str = 'zeros',
+        manager: Manager = None
+    ):
+        conv_1 = nn.Conv1d(
+            input_size,
+            hidden_size,
+            kernel_size,
+            padding=kernel_size//2,
+            bias=True,
+            padding_mode=padding_mode)
+
+        conv_2 = nn.Conv1d(
+            hidden_size,
+            hidden_size,
+            kernel_size,
+            padding=kernel_size//2,
+            bias=True,
+            padding_mode=padding_mode)
+
+        u1 = nn.Parameter(torch.empty(1, hidden_size, width))
+        u2 = nn.Parameter(torch.empty(1, hidden_size, width))
+
+        nn.init.normal_(conv_1.weight, mean=0., std=init_std(conv_1))
+        nn.init.normal_(conv_2.weight, mean=0., std=init_std(conv_2))
+        nn.init.constant_(conv_1.bias, 0.)
+        nn.init.constant_(conv_2.bias, 0.)
+        nn.init.constant_(u1, 0.5)
+        nn.init.constant_(u2, 0.5)
+
+        super().__init__(conv_1, conv_2, u1, u2, (hidden_size, width), manager=manager)

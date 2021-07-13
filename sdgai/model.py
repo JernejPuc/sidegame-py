@@ -4,21 +4,20 @@ from typing import Hashable, Iterable, Tuple, Union
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from sdgai.utils import ChainLock, get_n_params, batch_crop, symlog
-from sdgai.layers import XTraPool, FMBConv2d, SEResBlock2d, SEResBlock1d, FiLMAtten2d, IRLinearCell, IRConv2dCell
+from torch.multiprocessing import Manager
+from sdgai.utils import ChainLock, get_n_params, batch_crop, init_std, symlog
+from sdgai.layers import GDWPool1d, FMBConv, BResBlock, PosConv, SASAtten, FiLMAtten, \
+    IRLinearCell, IRConv2dCell, IRConv1dCell
 
 
 class PrimaryVisualEncoding(nn.Module):
     """
     Performs the first stages of visual processing.
 
-    As it fully processes images that correspond to the entire screen,
+    As it processes images that correspond to the entire (in-game) screen,
     details in its output will be inevitably lost or only roughly described,
     but the overall 'picture' of the scene and its main landmarks should be
-    sufficiently accounted for.
-
-    In attempt to emphasise absolute positions on the screen, the final (global)
-    pooling layer can be trained to consider spatial relations to an extent.
+    able to be accounted for.
     """
 
     HEIGHT = 144
@@ -27,14 +26,11 @@ class PrimaryVisualEncoding(nn.Module):
     FINAL_HEIGHT = HEIGHT // DIV_FACTOR
     FINAL_WIDTH = WIDTH // DIV_FACTOR
     FINAL_DEPTH = 96
-    ENC_SIZE = 192
-    N_BLOCKS = 5
+    ENC_SIZE = 320
+    N_BLOCKS = 9
 
     def __init__(self):
         super().__init__()
-
-        self.silu = nn.SiLU()
-        self.pre_act_bias = nn.Parameter(torch.zeros(1, self.ENC_SIZE, 1, 1))
 
         # 256x144x3 -> 128x72x32
         self.stem = nn.Conv2d(3, 32, 6, stride=2, padding=2, bias=False)
@@ -47,148 +43,150 @@ class PrimaryVisualEncoding(nn.Module):
 
         self.core = nn.Sequential(
             # 128x72x32 -> 64x36x48
-            FMBConv2d(32, 48, downscale=True, n_blocks=self.N_BLOCKS),
+            FMBConv(32, 48, 4, downscale=True, n_blocks=self.N_BLOCKS),
             # 64x36x48 -> 32x18x64
-            FMBConv2d(48, 64, downscale=True, n_blocks=self.N_BLOCKS),
+            FMBConv(48, 64, 4, downscale=True, n_blocks=self.N_BLOCKS),
+            FMBConv(64, 64, 3, n_blocks=self.N_BLOCKS),
             # 32x18x64 -> 32x18x96
-            FMBConv2d(64, 96, downscale=False, n_blocks=self.N_BLOCKS),
-            SEResBlock2d(96, 96, squeeze_ratio=4, n_blocks=self.N_BLOCKS),
-            SEResBlock2d(96, 96, squeeze_ratio=4, n_blocks=self.N_BLOCKS))
+            FMBConv(64, 96, 3, n_blocks=self.N_BLOCKS),
+            FMBConv(96, 96, 3, expansion_ratio=1.334, n_blocks=self.N_BLOCKS),
+            FMBConv(96, 96, 3, expansion_ratio=1.334, n_blocks=self.N_BLOCKS))
 
-        # 32x18x96 -> 16x9x96
-        self.pre_pool = nn.AvgPool2d(2, 2)
-
-        # 16x9x96 -> 1x1xO
-        self.pool = XTraPool(self.FINAL_DEPTH, self.ENC_SIZE, (self.FINAL_HEIGHT//2, self.FINAL_WIDTH//2))
+        # 32x18x96 -> 1x1xO
+        self.pool = nn.Sequential(
+            PosConv(96, self.ENC_SIZE, self.FINAL_HEIGHT, self.FINAL_WIDTH),
+            nn.MaxPool2d((self.FINAL_HEIGHT, self.FINAL_WIDTH)))
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor]:
-        x_stem = self.stem(x)
-        x_visual = self.core(x_stem)
+        x = self.stem(x)
+        x_visual = self.core(x)
 
-        x_visual_enc = self.pre_pool(x_visual)
-        x_visual_enc = self.pool(x_visual_enc)
-        x_visual_enc = self.silu(x_visual_enc + self.pre_act_bias)
+        x_visual_enc = self.pool(x_visual)
         x_visual_enc = torch.flatten(x_visual_enc, start_dim=1)
 
-        return x_stem, x_visual, x_visual_enc
+        return x_visual, x_visual_enc
 
 
 class FocusedVisualEncoding(nn.Module):
     """
-    Performs visual processing on an image that has already gone through a
-    convolutional stem, corresponding to a cutout around a point of focus.
-
-    Cutout size is determined by the size of icons (15x15) at post-stem conv.
-    resolution (approx. 7x7) with buffer given at the borders to compensate for
-    kernel size 3 (1 on each side).
+    Performs visual processing on a cutout of an image around a point of focus.
+    To alleviate redundancy, some features are inherited from primary encoding.
     """
 
-    CROP_LENGTH = 9
-    FINAL_DEPTH = 96
-    ENC_SIZE = FINAL_DEPTH + PrimaryVisualEncoding.FINAL_DEPTH
-    DIV_FACTOR = PrimaryVisualEncoding.DIV_FACTOR // 2
-    N_BLOCKS = 5
+    MAIN_CROP_SIZE = 24
+    DEEP_CROP_SIZE = 3
+    FINAL_CROP_SIZE = MAIN_CROP_SIZE // 2**2
+    BASE_DEPTH = 32
+    FINAL_DEPTH = BASE_DEPTH + PrimaryVisualEncoding.FINAL_DEPTH
+    ENC_SIZE = 256
+    DIV_FACTOR = PrimaryVisualEncoding.DIV_FACTOR
+    N_BLOCKS = 6
+    DEPADDING = 2
 
     def __init__(self):
         super().__init__()
 
-        # 9x9x32 -> 9x9x64 -> 9x9x128
-        self.core = nn.Sequential(
-            FMBConv2d(32, 64, n_blocks=self.N_BLOCKS),
-            SEResBlock2d(64, 64, squeeze_ratio=4, n_blocks=self.N_BLOCKS),
-            SEResBlock2d(64, 64, squeeze_ratio=4, n_blocks=self.N_BLOCKS),
-            SEResBlock2d(64, 64, squeeze_ratio=4, n_blocks=self.N_BLOCKS),
-            FMBConv2d(64, 96, n_blocks=self.N_BLOCKS))
+        # 24x24x3 -> 24x24x32
+        self.stem = nn.Conv2d(3, 32, 5, padding=2, bias=False)
 
+        with torch.no_grad():
+            rgb_mean = self.stem.weight.mean(dim=1, keepdim=False)
+            self.stem.weight[:, 0] = rgb_mean
+            self.stem.weight[:, 1] = rgb_mean
+            self.stem.weight[:, 2] = rgb_mean
+
+        # 24x24x32 -> 24x24x32
+        self.preproc = nn.Sequential(
+            FMBConv(self.BASE_DEPTH, self.BASE_DEPTH, 3, n_blocks=self.N_BLOCKS),
+            FMBConv(self.BASE_DEPTH, self.BASE_DEPTH, 3, n_blocks=self.N_BLOCKS),
+            FMBConv(self.BASE_DEPTH, self.BASE_DEPTH, 3, n_blocks=self.N_BLOCKS))
+
+        self.fuse = nn.Sequential(
+            # 24x24x128 -> 12x12x128
+            BResBlock(self.FINAL_DEPTH, self.FINAL_DEPTH, downscale=True, n_blocks=self.N_BLOCKS),
+            # 12x12x128 -> 6x6x128
+            BResBlock(self.FINAL_DEPTH, self.FINAL_DEPTH, downscale=True, n_blocks=self.N_BLOCKS),
+            # Incorporate surroundings before central crop
+            SASAtten(self.FINAL_DEPTH, self.FINAL_DEPTH, self.FINAL_CROP_SIZE, self.FINAL_CROP_SIZE, 4, self.N_BLOCKS))
+
+        self.pre_act_bias = nn.Parameter(torch.zeros(1, self.FINAL_DEPTH, 1, 1))
         self.silu = nn.SiLU()
-        self.pre_act_bias = nn.Parameter(torch.zeros(1, self.FINAL_DEPTH + PrimaryVisualEncoding.FINAL_DEPTH, 1, 1))
+        self.expand = nn.Conv2d(self.FINAL_DEPTH, self.ENC_SIZE, 1, bias=True)
+        self.pool = nn.AvgPool2d(2)
 
-        self.batch_indices = torch.arange(1, dtype=torch.long)[:, None, None]
-        self.length_indices = torch.arange(self.CROP_LENGTH, dtype=torch.long)
-        self.single_index = torch.arange(1, dtype=torch.long)
+        nn.init.normal_(self.expand.weight, mean=0., std=init_std(self.expand))
+        self.interp_size = (self.MAIN_CROP_SIZE,)*2
 
-    def move(self, device: Union[str, torch.device]):
-        """Move cached indices to new device."""
+    def forward(self, x: torch.Tensor, x_deep: torch.Tensor, focal_points: torch.Tensor) -> torch.Tensor:
+        # Get 24x24 cutout from base image
+        x = batch_crop(x, focal_points, length=self.MAIN_CROP_SIZE, naive=True)
 
-        self.batch_indices = self.batch_indices.to(device=device)
-        self.length_indices = self.length_indices.to(device=device)
-        self.single_index = self.single_index.to(device=device)
+        # Get 3x3 cutout from deep features
+        focal_points = (focal_points // self.DIV_FACTOR).to(torch.long)
+        x_deep = batch_crop(x_deep, focal_points, length=self.DEEP_CROP_SIZE, naive=True)
 
-    def forward(self, x_stem: torch.Tensor, x_visual: torch.Tensor, focal_points: torch.Tensor) -> torch.Tensor:
-        # Update cached indices
-        if self.batch_indices.shape[0] != focal_points.shape[0]:
-            self.batch_indices = torch.arange(
-                focal_points.shape[0], dtype=torch.long, device=self.batch_indices.device)[:, None, None]
+        # Extract high-res features
+        x = self.stem(x)
+        x = self.preproc(x)
 
-        # Get 9x9 cutout
-        x_stem = batch_crop(
-            x_stem,
-            focal_points,
-            length=self.CROP_LENGTH,
-            naive=True,
-            batch_indices=self.batch_indices,
-            length_indices=self.length_indices)
+        # Upscale deep feature cutout
+        x_deep = F.interpolate(x_deep, self.interp_size, mode='nearest')
 
-        # Get 1x1 cutout
-        x_visual = batch_crop(
-            x_visual,
-            (focal_points // self.DIV_FACTOR).to(torch.long),
-            length=1,
-            naive=True,
-            batch_indices=self.batch_indices,
-            length_indices=self.single_index)
+        # Fuse high-res and deep features
+        x = torch.cat((x, x_deep), dim=1)
+        x = self.fuse(x)
 
-        # Process, pool, and add features from primary branch
-        x_focused = self.core(x_stem)
-        x_focused = torch.mean(x_focused, dim=(2, 3), keepdim=True)
-        x_focused = torch.cat((x_focused, x_visual), dim=1)
+        # Extract 2x2 central features (surroundings incorporated with self-attention in fuse)
+        x = x[..., self.DEPADDING:-self.DEPADDING, self.DEPADDING:-self.DEPADDING]
 
-        x_focused = self.silu(x_focused + self.pre_act_bias)
-        x_focused = torch.flatten(x_focused, start_dim=1)
+        x = self.silu(x + self.pre_act_bias)
+        x = self.expand(x)
+        x = self.silu(x)
+        x = torch.mean(x, dim=(2, 3), keepdim=False)
 
-        return x_focused
+        return x
 
 
-class SpectralAudioEncoding(nn.Module):
+class AudioEncoding(nn.Module):
     """
     Processes pairs of spectral vectors (slices of a 'running' spectrogram).
-    Specifically, it focuses on auditory entities with a series of convolutions.
-
-    In a later component, the extracted feature vector is put through an LSTM
-    for spectro-temporal analysis and contextualisation.
+    Specifically, it focuses on auditory entities with a series of convolutions,
+    where some are retaining memory for spectro-temporal analysis.
     """
 
     WIDTH = 64
-    ENC_SIZE = 96
-    N_BLOCKS = 15
+    ENC_SIZE = 128
+    N_BLOCKS = 3
 
-    def __init__(self):
+    def __init__(self, manager: Manager = None):
         super().__init__()
 
         self.blocks = nn.Sequential(
             # 64x2 -> 32x16
             nn.Conv1d(2, 16, 6, stride=2, padding=2, bias=False, padding_mode='replicate'),
-            # 32x16 -> 16x16
-            nn.MaxPool1d(2, stride=2),
-            # 16x16 -> 16x32
-            SEResBlock1d(16, 16, squeeze_ratio=4, n_blocks=self.N_BLOCKS),
-            SEResBlock1d(16, 32, squeeze_ratio=4, n_blocks=self.N_BLOCKS),
-            # 16x32 -> 16x64
-            SEResBlock1d(32, 32, squeeze_ratio=4, n_blocks=self.N_BLOCKS),
-            SEResBlock1d(32, 32, squeeze_ratio=4, n_blocks=self.N_BLOCKS),
-            SEResBlock1d(32, 64, squeeze_ratio=4, n_blocks=self.N_BLOCKS),
-            # 16x96 -> 1xO
-            XTraPool(64, self.ENC_SIZE, self.WIDTH//4, dim=1))
+            # 32x16 -> 16x24
+            FMBConv(16, 24, 6, padding=2, downscale=True, n_blocks=self.N_BLOCKS, dim=1),
+            # 16x24 -> 16x32
+            FMBConv(24, 32, 5, padding=2, n_blocks=self.N_BLOCKS, dim=1),
+            # 16x32 -> 16x48
+            FMBConv(32, 48, 5, padding=2, n_blocks=self.N_BLOCKS, dim=1))
 
-        nn.init.normal_(self.blocks[0].weight, mean=0., std=0.05)
+        self.conv_mem_cell = IRConv1dCell(48, 48, 5, self.WIDTH//4, manager=manager)
+
+        # 16x48 -> 1xO
+        self.pool = GDWPool1d(48, self.ENC_SIZE, self.WIDTH//4)
+
+        nn.init.uniform_(self.blocks[0].weight, a=(-1. / (6*16)**0.5), b=(1. / (6*16)**0.5))
 
         with torch.no_grad():
             lr_mean = self.blocks[0].weight.mean(dim=1, keepdim=False)
             self.blocks[0].weight[:, 0] = lr_mean
             self.blocks[0].weight[:, 1] = lr_mean
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, actor_keys: Iterable[Hashable]) -> torch.Tensor:
         x = self.blocks(x)
+        x = self.conv_mem_cell(x, actor_keys)
+        x = self.pool(x)
         x = torch.flatten(x, start_dim=1)
         return x
 
@@ -209,10 +207,10 @@ class SpatioTemporalCentre(nn.Module):
     WIDTH = PrimaryVisualEncoding.FINAL_WIDTH
     INPUT_SIZE = PrimaryVisualEncoding.FINAL_DEPTH
     HIDDEN_SIZE = 96
-    ENC_SIZE = 192
+    ENC_SIZE = 320
     KERNEL_SIZE = 3
 
-    def __init__(self, input_state_size: int):
+    def __init__(self, input_state_size: int, manager: Manager = None):
         super().__init__()
 
         self.silu = nn.SiLU()
@@ -220,22 +218,22 @@ class SpatioTemporalCentre(nn.Module):
         self.modulation = nn.Linear(input_state_size, self.INPUT_SIZE*2)
         nn.init.constant_(self.modulation.bias, 0.)
 
-        self.pre_act_bias = nn.Parameter(torch.zeros(1, self.ENC_SIZE, 1, 1))
-
-        self.attention = FiLMAtten2d(self.INPUT_SIZE, self.HEIGHT, self.WIDTH, n_heads=4)
+        self.attention = FiLMAtten(self.INPUT_SIZE, self.HEIGHT, self.WIDTH, n_heads=4)
 
         self.conv_mem_cell = IRConv2dCell(
-            self.INPUT_SIZE*2, self.HIDDEN_SIZE, self.KERNEL_SIZE, self.HEIGHT, self.WIDTH)
+            self.INPUT_SIZE*2, self.HIDDEN_SIZE, self.KERNEL_SIZE, self.HEIGHT, self.WIDTH, manager=manager)
+
+        # 32x18x96 -> 1x1x320
+        self.pool_enc = nn.Sequential(
+            PosConv(self.HIDDEN_SIZE, self.ENC_SIZE, self.HEIGHT, self.WIDTH, preactivate=False),
+            nn.MaxPool2d((self.HEIGHT, self.WIDTH)))
 
         # 32x18x96 -> 16x9x96
-        self.pre_pool = nn.AvgPool2d(2, 2)
-
-        # 16x9x96 -> 1x1xO
-        self.pool = XTraPool(self.HIDDEN_SIZE, self.ENC_SIZE, (self.HEIGHT//2, self.WIDTH//2), preactivate=False)
+        self.pool_red = nn.AvgPool2d(2)
 
     def forward(
         self,
-        x_visual: torch.Tensor,
+        x: torch.Tensor,
         x_state: torch.Tensor,
         actor_keys: Iterable[Hashable]
     ) -> Tuple[torch.Tensor]:
@@ -243,12 +241,11 @@ class SpatioTemporalCentre(nn.Module):
         mod = self.modulation(x_state)
         mod_multiplier, mod_bias = torch.split(mod, self.INPUT_SIZE, dim=1)
 
-        x_visual = self.attention(x_visual, mod_multiplier, mod_bias)
-        x_visual = self.conv_mem_cell(x_visual, actor_keys)
+        x = self.attention(x, mod_multiplier, mod_bias)
+        x = self.conv_mem_cell(x, actor_keys)
 
-        x_visual = self.pre_pool(x_visual)
-        x_visual_enc = self.pool(x_visual)
-        x_visual_enc = self.silu(x_visual_enc + self.pre_act_bias)
+        x_visual = self.pool_red(x)
+        x_visual_enc = self.pool_enc(x)
         x_visual_enc = torch.flatten(x_visual_enc, start_dim=1)
 
         return x_visual, x_visual_enc
@@ -256,7 +253,7 @@ class SpatioTemporalCentre(nn.Module):
 
 class MotorCentre(nn.Module):
     """
-    Interpretes/decodes the action state to produce an action vector and
+    Interpretes/decodes the state of intent to produce an action vector and
     a focus heatmap, i.e. probabilities of key presses or of the cursor being
     moved for a specific amount and a spatial distribution of probabilities
     that the focus should be at some point.
@@ -265,7 +262,7 @@ class MotorCentre(nn.Module):
     HEIGHT = SpatioTemporalCentre.HEIGHT // 2
     WIDTH = SpatioTemporalCentre.WIDTH // 2
     FEAT_SIZE = SpatioTemporalCentre.HIDDEN_SIZE
-    ACTION_BASE_SIZE = 96
+    ACTION_BASE_SIZE = 128
     ACTION_SIZE = 72
 
     KERNEL_SIZE_1 = 3
@@ -285,7 +282,7 @@ class MotorCentre(nn.Module):
         self.silu = nn.SiLU()
         self.softmax = nn.Softmax(dim=1)
 
-        # 384 -> 336 (96 + 16x9 + 96)
+        # 384 -> 368 (96 + 16x9 + 128)
         self.base_fc = nn.Linear(input_state_size, self.FEAT_SIZE + self.HEIGHT*self.WIDTH + self.ACTION_BASE_SIZE)
 
         # 240 (16x9 + 96) -> 83 (3x3 + 5x5 + 7x7)
@@ -293,7 +290,7 @@ class MotorCentre(nn.Module):
             self.HEIGHT*self.WIDTH + self.ACTION_BASE_SIZE,
             self.KERNEL_UNROLL_1 + self.KERNEL_UNROLL_2 + self.KERNEL_UNROLL_3)
 
-        # 480 (384 + 96) -> 72
+        # 512 (384 + 128) -> 72
         self.action_fc = nn.Linear(input_state_size + self.ACTION_BASE_SIZE, self.ACTION_SIZE)
 
         nn.init.constant_(self.base_fc.bias, 0.)
@@ -370,9 +367,8 @@ class PCNet(nn.Module):
     """
     Peripheral-compatible recurrent neural network.
 
-    The name is intended to be evocative of personal computer or player
-    character, but otherwise refers to its interface with audio-visual inputs
-    and mouse/keyboard outputs.
+    The name is intended to allude to the personal computer, but otherwise
+    refers to its interface with audio-visual inputs and mouse/keyboard outputs.
 
     Layers of the network take different amounts of time to process, and,
     along with external factors, there is a possibility of racing conditions
@@ -387,42 +383,47 @@ class PCNet(nn.Module):
     the fly.
     """
 
-    N_FPS = 30
-    N_DELAY = 6
-    N_WORKERS = N_DELAY
-    STATE_LSTM_SIZE = 384
-    INTENT_LSTM_SIZE = 384
-    MAX_FOCAL_OFFSET = float(PrimaryVisualEncoding.WIDTH // 2)
+    N_WORKERS = N_DELAY = 6
+    INPUT_MEM_SIZE = 384
+    INTENT_MEM_SIZE = 384
+    MAX_FOCAL_OFFSET = float(max(PrimaryVisualEncoding.HEIGHT, PrimaryVisualEncoding.WIDTH))
     MKBD_ENC_SIZE = 22
 
-    def __init__(self):
+    def __init__(self, manager: Manager = None, critic: bool = False):
         super().__init__()
 
-        input_state_size = PrimaryVisualEncoding.ENC_SIZE + FocusedVisualEncoding.ENC_SIZE + \
-            SpectralAudioEncoding.ENC_SIZE + self.MKBD_ENC_SIZE
-        attended_state_size = SpatioTemporalCentre.ENC_SIZE + self.STATE_LSTM_SIZE
+        encoded_state_size = sum((
+            PrimaryVisualEncoding.ENC_SIZE, FocusedVisualEncoding.ENC_SIZE, AudioEncoding.ENC_SIZE, self.MKBD_ENC_SIZE))
+        attended_state_size = SpatioTemporalCentre.ENC_SIZE + self.INPUT_MEM_SIZE
 
         # Cognitive centres
-        self.primary_visual_encoding = PrimaryVisualEncoding()
-        self.focused_visual_encoding = FocusedVisualEncoding()
-        self.spectral_audio_encoding = SpectralAudioEncoding()
+        self.primary_visual_centre = PrimaryVisualEncoding()
+        self.focused_visual_centre = FocusedVisualEncoding()
+        self.audio_centre = AudioEncoding(manager=manager)
 
-        self.temporal_centre = IRLinearCell(input_state_size, self.STATE_LSTM_SIZE)
-        self.spatio_temporal_centre = SpatioTemporalCentre(self.STATE_LSTM_SIZE)
-        self.intent_inference = IRLinearCell(attended_state_size, self.INTENT_LSTM_SIZE)
-        self.motor_decoding = MotorCentre(self.INTENT_LSTM_SIZE)
+        self.temporal_centre = IRLinearCell(encoded_state_size, self.INPUT_MEM_SIZE, manager=manager)
+        self.spatio_temporal_centre = SpatioTemporalCentre(self.INPUT_MEM_SIZE, manager=manager)
+        self.intent_centre = IRLinearCell(attended_state_size, self.INTENT_MEM_SIZE, manager=manager)
+        self.motor_decoding = MotorCentre(self.INTENT_MEM_SIZE)
 
         # Mouse/key input adjustments
         self.mkbd_scale = nn.Parameter(torch.ones(1, self.MKBD_ENC_SIZE))
         self.mkbd_bias = nn.Parameter(torch.zeros(1, self.MKBD_ENC_SIZE))
 
+        # Advantage estimator
+        if critic:
+            self.critic = nn.Linear(self.INTENT_MEM_SIZE, 1)
+
+        else:
+            self.critic = None
+
         # Locks for multi-threaded inference
-        self.lock_1 = ChainLock(self.N_WORKERS)
-        self.lock_2 = ChainLock(self.N_WORKERS)
-        self.lock_3 = ChainLock(self.N_WORKERS)
-        self.lock_4 = ChainLock(self.N_WORKERS)
-        self.lock_5 = ChainLock(self.N_WORKERS)
-        self.lock_6 = ChainLock(self.N_WORKERS)
+        self.lock_1 = ChainLock(self.N_WORKERS, manager=manager)
+        self.lock_2 = ChainLock(self.N_WORKERS, manager=manager)
+        self.lock_3 = ChainLock(self.N_WORKERS, manager=manager)
+        self.lock_4 = ChainLock(self.N_WORKERS, manager=manager)
+        self.lock_5 = ChainLock(self.N_WORKERS, manager=manager)
+        self.lock_6 = ChainLock(self.N_WORKERS, manager=manager)
 
     def get_n_params(self, trainable: bool = True) -> int:
         """Get the number of (trainable) parameters in the instantiated model."""
@@ -432,40 +433,33 @@ class PCNet(nn.Module):
     def clear(self, keys: Iterable[Hashable] = None):
         """Clear final (first) hidden/cell states of LSTM cells for TBPTT."""
 
-        self.temporal_centre.store_1.clear(keys=keys)
-        self.temporal_centre.store_2.clear(keys=keys)
-        self.spatio_temporal_centre.conv_mem_cell.store_1.clear(keys=keys)
-        self.spatio_temporal_centre.conv_mem_cell.store_2.clear(keys=keys)
-        self.intent_inference.store_1.clear(keys=keys)
-        self.intent_inference.store_2.clear(keys=keys)
+        self.audio_centre.conv_mem_cell.clear(keys=keys)
+        self.temporal_centre.clear(keys=keys)
+        self.spatio_temporal_centre.conv_mem_cell.clear(keys=keys)
+        self.intent_centre.clear(keys=keys)
 
-    def detach(self, keys: Iterable[Hashable] = None, detach_idx: int = -1):
+    def detach(self, keys: Iterable[Hashable] = None):
         """Detach final (first) hidden/cell states of LSTM cells for TBPTT."""
 
-        self.temporal_centre.store_1.detach(keys, detach_idx=detach_idx)
-        self.temporal_centre.store_2.detach(keys, detach_idx=detach_idx)
-        self.spatio_temporal_centre.conv_mem_cell.store_1.detach(keys, detach_idx=detach_idx)
-        self.spatio_temporal_centre.conv_mem_cell.store_2.detach(keys, detach_idx=detach_idx)
-        self.intent_inference.store_1.detach(keys, detach_idx=detach_idx)
-        self.intent_inference.store_2.detach(keys, detach_idx=detach_idx)
+        self.audio_centre.conv_mem_cell.detach(keys=keys)
+        self.temporal_centre.detach(keys=keys)
+        self.spatio_temporal_centre.conv_mem_cell.detach(keys)
+        self.intent_centre.detach(keys=keys)
 
     def move(self, device: Union[str, torch.device]) -> 'PCNet':
         """Move model parameters and initial/default states to new device."""
 
-        self.focused_visual_encoding.move(device)
-        self.temporal_centre.store_1.move(device)
-        self.temporal_centre.store_2.move(device)
-        self.spatio_temporal_centre.conv_mem_cell.store_1.move(device)
-        self.spatio_temporal_centre.conv_mem_cell.store_2.move(device)
-        self.intent_inference.store_1.move(device)
-        self.intent_inference.store_2.move(device)
+        self.audio_centre.conv_mem_cell.move(device)
+        self.temporal_centre.move(device)
+        self.spatio_temporal_centre.conv_mem_cell.move(device)
+        self.intent_centre.move(device)
 
         return self.to(device=device)
 
-    def load(self, path: str, device: Union[str, torch.device] = None) -> 'PCNet':
+    def load(self, path: str, device: Union[str, torch.device] = None, strict: bool = True) -> 'PCNet':
         """Load model parameters from a state dict at the specified path."""
 
-        self.load_state_dict(torch.load(path, map_location=torch.device('cpu')))
+        self.load_state_dict(torch.load(path, map_location=torch.device('cpu')), strict=strict)
 
         if device is not None:
             return self.move(device)
@@ -484,20 +478,23 @@ class PCNet(nn.Module):
         x_mkbd: torch.Tensor,
         focal_points: torch.Tensor,
         actor_keys: Iterable[Hashable],
-        return_state: bool = False
+        detach: bool = False
     ) -> Tuple[torch.Tensor]:
 
         # Primary visual encoding
         with self.lock_1:
-            x_visual_stem, x_visual, x_visual_enc = self.primary_visual_encoding(x_visual)
+            x_visual_deep, x_visual_enc = self.primary_visual_centre(x_visual)
 
-        # Fine visual encoding
+        # Focused visual encoding
         with self.lock_2:
-            x_focused_enc = self.focused_visual_encoding(x_visual_stem, x_visual, focal_points)
+            x_focused_enc = self.focused_visual_centre(x_visual, x_visual_deep, focal_points)
 
         # Audio encoding and mkbd normalisation
         with self.lock_3:
-            x_audio = self.spectral_audio_encoding(x_audio)
+            x_audio = self.audio_centre(x_audio, actor_keys)
+
+            if detach:
+                self.audio_centre.conv_mem_cell.detach(keys=actor_keys)
 
             x_mkbd = torch.hstack((x_mkbd, focal_points / self.MAX_FOCAL_OFFSET))
             x_mkbd = x_mkbd * self.mkbd_scale + self.mkbd_bias
@@ -507,18 +504,29 @@ class PCNet(nn.Module):
             x_state = torch.hstack((x_visual_enc, x_focused_enc, x_audio, x_mkbd))
             x_state = self.temporal_centre(x_state, actor_keys)
 
+            if detach:
+                self.temporal_centre.detach(keys=actor_keys)
+
         # Spatio-temporal contextualisation
         with self.lock_5:
-            x_visual, x_visual_enc = self.spatio_temporal_centre(x_visual, x_state, actor_keys)
+            x_visual, x_visual_enc = self.spatio_temporal_centre(x_visual_deep, x_state, actor_keys)
+
+            if detach:
+                self.spatio_temporal_centre.conv_mem_cell.detach(keys=actor_keys)
 
         # Action inference and motor decoding
         with self.lock_6:
             x_state = torch.hstack((x_visual_enc, x_state))
-            x_state = self.intent_inference(x_state, actor_keys)
+            x_state = self.intent_centre(x_state, actor_keys)
+
+            if detach:
+                self.intent_centre.detach(keys=actor_keys)
+
             x_focus, x_action = self.motor_decoding(x_visual, x_state)
 
-        # State can be used for a critic/advantage estimator head in RL, but not needed for inference
-        if return_state:
-            return x_focus, x_action, x_state
+        # States can be used for a critic/advantage estimator head in RL, but not needed for inference
+        if self.critic is not None:
+            state_values = self.critic(x_state)
+            return x_focus, x_action, state_values
 
         return x_focus, x_action

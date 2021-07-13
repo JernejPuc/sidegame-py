@@ -60,16 +60,16 @@ def parse_args() -> argparse.Namespace:
         help='Threshold above the severity of which the runtime messages are logged or displayed.')
 
     parser.add_argument(
-        '--lr_init', type=float, default=8e-5,
+        '--lr_init', type=float, default=3e-5,
         help='Initial learning rate in a scheduled cycle.')
     parser.add_argument(
-        '--lr_max', type=float, default=8e-4,
+        '--lr_max', type=float, default=6e-4,
         help='Peak learning rate in a scheduled cycle.')
     parser.add_argument(
-        '--lr_final', type=float, default=4e-7,
+        '--lr_final', type=float, default=1e-6,
         help='Final learning rate in a scheduled cycle.')
     parser.add_argument(
-        '--pct_start', type=float, default=0.125,
+        '--pct_start', type=float, default=0.15,
         help='Ratio of the cycle at which the learning rate should peak.')
     parser.add_argument(
         '--beta1', '--beta1_base', type=float, default=0.8,
@@ -81,14 +81,14 @@ def parse_args() -> argparse.Namespace:
         '--beta2', type=float, default=0.975,
         help='2nd momentum-related parameter for the Adam optimiser.')
     parser.add_argument(
-        '--weight_decay', type=float, default=4e-5,
+        '--weight_decay', type=float, default=5e-5,
         help='Regularisation parameter for the AdamW optimiser.')
     parser.add_argument(
         '--clip_grad_val', type=float, default=4.,
         help='Bandaid to mitigate exploding gradients by clipping them per module/parameter on backward pass. '
         'This distorts the gradients which can cause problems when propagated further.')
     parser.add_argument(
-        '--clip_grad_norm', type=float, default=6.,
+        '--clip_grad_norm', type=float, default=8.,
         help='Bandaid to mitigate exploding gradients by limiting their collective magnitude. '
         'As this is performed after backwarding, some gradients could have already exploded enough to cause issues.')
 
@@ -99,16 +99,13 @@ def parse_args() -> argparse.Namespace:
         '--batch_size', type=int, default=12,
         help='Number of different sequences processed simultaneously per each training node.')
     parser.add_argument(
-        '--slice_length', '--update_interval', '--k1', type=int, default=30,
-        help='Number of steps between updates in epochwise TBPTT.')
-    parser.add_argument(
-        '--truncated_length', '--k2', type=int, default=30,
-        help='Length of the longest differentiable sequence in epochwise TBPTT.')
+        '--slice_length', '--k1', '--k2', type=int, default=30,
+        help='Length of the longest differentiable sequence and number of steps between updates in epochwise BPTT.')
     parser.add_argument(
         '--eval_stride', '--k3', type=int, default=1,
         help='Number of steps between loss evaluation in epochwise TBPTT.')
     parser.add_argument(
-        '--exp_length_on_reset', type=float, default=1.02,
+        '--exp_length_on_reset', type=float, default=1.015,
         help='Start with sub-sequences of `slice_length`, then exponentiate their length (with rounding) '
         'to iteratively increase overall sequence length until they can be processed in full. '
         'Intended to vary and decorrelate initial batches and corresponding updates.')
@@ -117,19 +114,19 @@ def parse_args() -> argparse.Namespace:
         help='Whether to reduce step-wise losses in epochwise TBPTT with summation or averaging.')
 
     parser.add_argument(
-        '--steps', type=int, default=int(8e+4),
+        '--steps', type=int, default=int(300e+3),
         help='Maximum number of steps within a training session.')
     parser.add_argument(
-        '--mkbd_release_start', type=int, default=int(8e+3),
+        '--mkbd_release_start', type=int, default=15000,
         help='Step until which mouse/keyboard input is suppressed.')
     parser.add_argument(
-        '--mkbd_release_steps', type=int, default=int(2e+3),
+        '--mkbd_release_steps', type=int, default=1000,
         help='Number of steps over which mouse/keyboard input is increased to full value.')
     parser.add_argument(
-        '--save_steps', type=int, default=250,
+        '--save_steps', type=int, default=500,
         help='Step interval for saving current model parameters.')
     parser.add_argument(
-        '--branch_steps', type=int, default=int(5e+3),
+        '--branch_steps', type=int, default=int(15e+3),
         help='Step interval for starting a new branch, i.e. path to save current model parameters.')
     parser.add_argument(
         '--log_steps', type=int, default=100,
@@ -173,9 +170,8 @@ def run_imitation(
     Synchronise between processing nodes to train an AI model with behavioural
     cloning based on demonstrations extracted from SDG recordings.
 
-    Uses epochwise TBPTT, with parameters `k1`, `k2`, and `k3`, which allow
-    epochwise BPTT (`k1==k2`, `k3==1`) and true TBPTT (`k1==k3`) as special
-    cases. Compared to true TBPTT, epochwise variants will propagate gradients
+    Uses epochwise backpropagation through time (EBPTT) for recurrent elements.
+    Compared to true TBPTT, epochwise variants will propagate gradients
     less consistently (a memory state can take part in `k3` to `k1` passes),
     but should be more efficient due to fewer backward and update steps.
 
@@ -197,7 +193,7 @@ def run_imitation(
     logger.propagate = False
 
     # Determine subset of available sequences
-    data_files = [filename for filename in os.listdir(args.data_dir) if filename.endswith('.h5')]
+    data_files = [filename for filename in sorted(os.listdir(args.data_dir)) if filename.endswith('.h5')]
 
     if is_distributed:
         pool_idx = round(rank * (len(data_files) - args.pool_size) / (world_size - 1))
@@ -206,9 +202,15 @@ def run_imitation(
     else:
         file_slice = slice(len(data_files))
 
-    data_files = [h5py.File(os.path.join(args.data_dir, filename), 'r') for filename in data_files[file_slice]]
-
+    data_files = data_files[file_slice]
     assert data_files, 'No data for file slice in given directory.'
+
+    # Confirm file subset per node
+    sleep(RANK_DELAY * rank)
+    logger.debug('Last file and file number: %s (%s)', max(data_files), len(data_files))
+    sleep(RANK_DELAY * world_size)
+
+    data_files = [h5py.File(os.path.join(args.data_dir, filename), 'r') for filename in data_files]
 
     # Same seed for initialising model weights
     torch.manual_seed(args.seed)
@@ -281,24 +283,32 @@ def run_imitation(
 
     if args.device.startswith('cuda'):
         torch.backends.cudnn.benchmark = True
+        torch.backends.cudnn.enabled = True
 
     start_time = perf_counter()
     model_branch = 0
-    running_train_loss = 0.
-    last_train_loss = np.Inf
     epoch_losses = deque()
+    last_train_loss = np.Inf
+    running_train_loss = 0.
+    running_scalars = {
+        'kbd': {},
+        'mmot_y': {},
+        'mmot_x': {},
+        'mwhl_y': {},
+        'focus': {},
+        'num_alpha': {},
+        'loss_per_key': {}}
 
     k1 = args.slice_length
-    k2 = args.truncated_length
     k3 = args.eval_stride
+    assert k3 <= k1, f'`k3` must be less than or equal to `k1`, got `k3`: {k3} and `k1`: {k1}.'
 
-    assert k1 <= k2 <= 2*k1, '`k2` must be (inclusively) between `k1` and `2*k1`.'
-    assert k3 <= k1, '`k3` must be less than or equal to `k1`'
+    n_unrolled_steps = args.log_steps * k1
 
     logger.debug('Training...')
 
     for i, data in enumerate(dataset, start=1):
-        if termination_event.wait(0.):
+        if termination_event.is_set():
             break
 
         effective_step = args.resume_step + i
@@ -350,6 +360,8 @@ def run_imitation(
             for key in keys[j]:
                 delayed_foci[key].append(demo_focus[key_list.index(key)])
 
+            demo_focus = demo_focus // 2
+
             foci_j = torch.stack([delayed_foci[key].popleft() for key in keys[j]])
 
             # Model output
@@ -357,7 +369,19 @@ def run_imitation(
 
             # Compute loss and keep data in memory
             if not (j+1) % k3:
-                epoch_losses.append(supervised_loss(x_focus, x_action, demo_focus, demo_action))
+                key_strings = [str(key) for key in keys[j]]
+                train_loss, scalars = supervised_loss(x_focus, x_action, demo_focus, demo_action, keys=key_strings)
+                epoch_losses.append(train_loss)
+
+                for scalar_key, scalars_per_sequence in scalars.items():
+                    running_scalars_per_sequence = running_scalars[scalar_key]
+
+                    for sequence_key, scalar_val in scalars_per_sequence.items():
+                        if sequence_key not in running_scalars_per_sequence:
+                            running_scalars_per_sequence[sequence_key] = scalar_val
+
+                        else:
+                            running_scalars_per_sequence[sequence_key] += scalar_val
 
         # Get average or total loss
         # NOTE: Sources apparently point to summation, but this makes the values high and dependant on batch size:
@@ -375,8 +399,8 @@ def run_imitation(
         optimizer.step()
         scheduler.step()
 
-        # Detach final (first) hidden/cell states of LSTM cells for TBPTT
-        (model.module if is_distributed else model).detach(keys=keys[-1], detach_idx=-(k2-k1+1))
+        # Detach final (first) hidden/cell states of LSTM cells for EBPTT
+        (model.module if is_distributed else model).detach(keys=keys[-1])
 
         # Log running train loss
         running_train_loss += loss.item()
@@ -386,6 +410,15 @@ def run_imitation(
             running_train_loss = 0.
 
             writer.add_scalar('imitation loss', last_train_loss, global_step=effective_step)
+
+            for scalar_key, scalars_per_sequence in running_scalars.items():
+                for sequence_key in scalars_per_sequence:
+                    scalars_per_sequence[sequence_key] /= n_unrolled_steps
+
+                writer.add_scalars(scalar_key, scalars_per_sequence, global_step=effective_step)
+
+                for sequence_key in scalars_per_sequence:
+                    scalars_per_sequence[sequence_key] = 0.
 
         # Save model checkpoint
         if is_main and not i % args.branch_steps:
@@ -436,7 +469,7 @@ if __name__ == '__main__':
     ctx = mp.spawn(run_imitation, args=(nprocs, args, termination_event), nprocs=nprocs, join=False, daemon=True)
 
     try:
-        while not termination_event.wait(0.):
+        while not termination_event.is_set():
             sleep(INTERRUPT_CHECK_PERIOD)
 
     except KeyboardInterrupt:

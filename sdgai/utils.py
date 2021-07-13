@@ -7,7 +7,7 @@ import h5py
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.multiprocessing import Lock
+from torch.multiprocessing import Lock, Manager
 
 
 DIVLOGPI = 1./np.log(np.pi)
@@ -25,37 +25,40 @@ class ChainLock:
     each link would be new and unique, and the chain 'infinite'.
     """
 
-    def __init__(self, n_workers: int):
-        self._free_locks = deque(Lock() for _ in range(n_workers))
-        self._active_locks = deque()
+    def __init__(self, n_workers: int, manager: Manager = None):
+        self._locks = [Lock() for _ in range(n_workers)]
+        self._free_lock_ids = list(range(n_workers)) if manager is None else manager.list(list(range(n_workers)))
+        self._active_lock_ids = [] if manager is None else manager.list()
 
     def __enter__(self):
-        own_lock = self._free_locks.popleft()
+        own_lock_id = self._free_lock_ids.pop(0)
+        own_lock = self._locks[own_lock_id]
         own_lock.acquire()
 
-        self._active_locks.append(own_lock)
+        self._active_lock_ids.append(own_lock_id)
 
         # Wait for predecessor to finish
-        if len(self._active_locks) > 1:
-            with self._active_locks[-2]:
+        if len(self._active_lock_ids) > 1:
+            with self._locks[self._active_lock_ids[-2]]:
                 pass
 
     def __exit__(self, *_exc_args):
-        own_lock = self._active_locks.popleft()
+        own_lock_id = self._active_lock_ids.pop(0)
+        own_lock = self._locks[own_lock_id]
         own_lock.release()
 
-        self._free_locks.append(own_lock)
+        self._free_lock_ids.append(own_lock_id)
 
 
 class StateStore:
     """
     Store for sequential states of dynamic combinations of multiple actors
-    (intended for distributed inference and TBPTT).
+    (intended for distributed inference and EBPTT).
     """
 
-    def __init__(self, dim: Union[int, Tuple[int]]):
-        self.batches: Deque[torch.Tensor] = deque()
-        self.states: Dict[Hashable, torch.Tensor] = {}
+    def __init__(self, dim: Union[int, Tuple[int]], manager: Manager = None):
+        self.batches: List[torch.Tensor] = [] if manager is None else manager.list()
+        self.states: Dict[Hashable, torch.Tensor] = {} if manager is None else manager.dict()
         self.default = torch.zeros(dim)
 
     def move(self, device: Union[str, torch.device]):
@@ -69,7 +72,12 @@ class StateStore:
         for key in self.states.keys():
             self.states[key] = self.states[key].to(device=device)
 
-        self.batches.clear()
+        try:
+            self.batches.clear()
+
+        except AttributeError:
+            for _ in range(len(self.batches)):
+                del self.batches[0]
 
     def clear(self, keys: Iterable[Hashable] = None):
         """
@@ -98,37 +106,46 @@ class StateStore:
 
         self.batches.append(states)
 
-    def detach(self, keys: Iterable[Hashable], detach_idx: int = -1):
+    def detach(self, keys: Iterable[Hashable]):
         """
-        Collectively detach the states from the computational graph at a given
-        point and clear the explicit buffer (tensors after the detached should
-        still be tracked in the background).
+        Collectively detach the states from the computational graph at the final
+        batch and clear the explicit buffer.
 
         States to be preserved for the next iteration are extracted as views
         of the final batch. Dividing batches into views and then stacking them
-        according to given keys allows keeping the graph state separately for
-        multiple actors.
+        according to given keys allows them to be updated separately for
+        multiple actors. Once the updates have replaced all of the views of
+        a specific batch, its resources should be released, as it is no longer
+        referenced.
 
-        NOTE: Whereas views themselves cannot be detached in-place to break
-        the computational graph per key, stacking creates a new tensor, which
-        can be used in their stead and then detached itself, as noted above.
+        NOTE: This was initially formulated as an attempt to break the
+        computational graph at an arbitrary point, but certain errors
+        stemming from the rigidity of the graph could not be resolved,
+        so it only worked for the final batch.
 
-        NOTE: The source of the previous states should be part of the detached
-        graph, so their resources should be released when new states replace
-        them, as they are no longer referenced.
+        See:
+        - https://discuss.pytorch.org/t/implementing-truncated-backpropagation-through-time/15500
+        - https://discuss.pytorch.org/t/quick-detach-question/1090
+        - https://discuss.pytorch.org/t/stop-backward-at-some-intermediate-tensor/74948
+        - https://pytorch.org/docs/stable/generated/torch.Tensor.backward.html
         """
 
         if not self.batches:
             return
 
-        # Break computational graph at given batch
-        self.batches[detach_idx].detach_()
+        # Break computational graph at final batch
+        final_batch = self.batches[-1].detach()
+
+        try:
+            self.batches.clear()
+
+        except AttributeError:
+            for _ in range(len(self.batches)):
+                del self.batches[0]
 
         # Update states with views of the final batch
-        for key, state in zip(keys, self.batches[-1]):
+        for key, state in zip(keys, final_batch):
             self.states[key] = state
-
-        self.batches.clear()
 
 
 def get_n_params(model: nn.Module, trainable: bool = True) -> int:
@@ -140,11 +157,11 @@ def get_n_params(model: nn.Module, trainable: bool = True) -> int:
 def init_std(layer: Union[nn.Linear, nn.Conv2d, nn.Conv1d], n_blocks: int = None, n_layers: int = 2) -> float:
     """Get the standard deviation corresponding to He or Fixup initialisation."""
 
+    # He init
     if isinstance(layer, nn.Linear):
-        std = 1. / np.sqrt(layer.out_features)
+        std = np.sqrt(2. / layer.out_features)
 
     else:
-        # He init
         n_params = np.prod(layer.kernel_size) * layer.out_channels
         std = np.sqrt(2. / n_params)
 
@@ -274,8 +291,9 @@ def supervised_loss(
     demo_focus: torch.Tensor,
     demo_action: torch.Tensor,
     fl_gamma: float = 2,
-    fl_alpha: float = 0.95
-) -> torch.Tensor:
+    fl_alpha: float = 0.95,
+    keys: List[str] = None
+) -> Tuple[torch.Tensor, Dict[str, Dict[str, float]]]:
     """
     Supervised loss function based on cross entropy (related to MLE and KL div)
     with focal (loss) adjustment (not to be confused with the focal term)
@@ -311,19 +329,50 @@ def supervised_loss(
         loss_per_sample = torch.sum(fl_alpha * focal_loss_weights * terms_per_sample, dim=1)
 
     else:
-        focal_loss_alphas = torch.cat(
+        alpha_flags = torch.cat(
             (
                 demo_action[:, :19],
-                demo_action[:, 31:32],
-                demo_action[:, 56:57],
-                demo_action[:, 70:71],
+                1. - demo_action[:, 31:32],
+                1. - demo_action[:, 56:57],
+                1. - demo_action[:, 70:71],
                 torch.zeros_like(focal_term)), dim=1)
 
-        focal_loss_alphas = focal_loss_alphas * fl_alpha + (1. - focal_loss_alphas) * (1. - fl_alpha)
+        focal_loss_alphas = alpha_flags * fl_alpha + (1. - alpha_flags) * (1. - fl_alpha)
 
         loss_per_sample = torch.sum(focal_loss_alphas * focal_loss_weights * terms_per_sample, dim=1)
 
-    return torch.mean(loss_per_sample)
+    if keys is None:
+        return torch.mean(loss_per_sample), {}
+
+    # Loss terms per key
+    kbd_scalars = {}
+    mvmt_y_scalars = {}
+    mvmt_x_scalars = {}
+    mwhl_y_scalars = {}
+    focal_scalars = {}
+    alpha_scalars = {}
+    loss_scalars = {}
+
+    with torch.no_grad():
+        for idx, key in enumerate(keys):
+            kbd_scalars[key] = kbd_term[idx].sum().item()
+            mvmt_y_scalars[key] = mvmt_y_term[idx].item()
+            mvmt_x_scalars[key] = mvmt_x_term[idx].item()
+            mwhl_y_scalars[key] = mwhl_y_term[idx].item()
+            focal_scalars[key] = focal_term[idx].item()
+            alpha_scalars[key] = alpha_flags[idx].sum().item()
+            loss_scalars[key] = loss_per_sample[idx].item()
+
+    scalars = {
+        'kbd': kbd_scalars,
+        'mmot_y': mvmt_y_scalars,
+        'mmot_x': mvmt_x_scalars,
+        'mwhl_y': mwhl_y_scalars,
+        'focus': focal_scalars,
+        'num_alpha': alpha_scalars,
+        'loss_per_key': loss_scalars}
+
+    return torch.mean(loss_per_sample), scalars
 
 
 class SequenceIterator:
@@ -369,8 +418,14 @@ class SequenceIterator:
         max_length = self.total_length - self.slice_length
 
         if self.exp_length_on_reset is not None:
-            max_length = min(max_length, int(self.slice_length * self.exp_length_on_reset ** self.exp_length_ctr))
-            self.exp_length_ctr += 1
+            exp_length = int(self.slice_length * self.exp_length_on_reset ** self.exp_length_ctr)
+
+            if exp_length < max_length:
+                max_length = exp_length
+                self.exp_length_ctr += 1
+
+            else:
+                self.exp_length_on_reset = None
 
         self.slice_idx = 0
         self.slice_offset: int = 0 if self.rng is None else self.rng.integers(0, self.total_length - max_length)
@@ -410,7 +465,7 @@ class Dataset:
     def __init__(
         self,
         files: Iterable[h5py.File],
-        slice_length: int = 15,
+        slice_length: int = 30,
         max_steps_with_repeat: int = 0,
         max_batch_size: int = None,
         resume_step: int = 0,
@@ -478,7 +533,7 @@ class Dataset:
                 torch.as_tensor(np.concatenate(images, axis=1), device=self.device),
                 torch.as_tensor(np.concatenate(spectra, axis=1), device=self.device),
                 torch.as_tensor(np.concatenate(mkbds, axis=1), device=self.device),
-                torch.as_tensor(np.concatenate(foci, axis=1)/2., dtype=torch.long, device=self.device),
+                torch.as_tensor(np.concatenate(foci, axis=1), dtype=torch.long, device=self.device),
                 np.concatenate(keys, axis=1)),
             torch.as_tensor(np.concatenate(actions, axis=1), device=self.device))
 
