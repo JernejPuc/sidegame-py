@@ -369,7 +369,7 @@ def run_imitation(
 
             # Compute loss and keep data in memory
             if not (j+1) % k3:
-                key_strings = [str(key) for key in keys[j]]
+                key_strings = [key if isinstance(key, str) else f'{int(key):02d}' for key in keys[j]]
                 train_loss, scalars = supervised_loss(x_focus, x_action, demo_focus, demo_action, keys=key_strings)
                 epoch_losses.append(train_loss)
 
@@ -409,7 +409,7 @@ def run_imitation(
             last_train_loss = running_train_loss / args.log_steps
             running_train_loss = 0.
 
-            writer.add_scalar('imitation loss', last_train_loss, global_step=effective_step)
+            writer.add_scalar('imitation_loss', last_train_loss, global_step=effective_step)
 
             for scalar_key, scalars_per_sequence in running_scalars.items():
                 for sequence_key in scalars_per_sequence:

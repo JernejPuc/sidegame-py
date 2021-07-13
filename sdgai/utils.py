@@ -26,7 +26,7 @@ class ChainLock:
     """
 
     def __init__(self, n_workers: int, manager: Manager = None):
-        self._locks = [Lock() for _ in range(n_workers)]
+        self._locks = [Lock() if manager is None else manager.Lock() for _ in range(n_workers)]
         self._free_lock_ids = list(range(n_workers)) if manager is None else manager.list(list(range(n_workers)))
         self._active_lock_ids = [] if manager is None else manager.list()
 
@@ -302,7 +302,9 @@ def supervised_loss(
     Different terms are summed together and then averaged across the batch.
 
     NOTE: Due to unreliable pseudo-labels for focal coordinates, the focal term
-    is treated as an abundant class to be assigned a smaller weight.
+    is treated as an abundant class to be assigned a smaller weight. Similarly,
+    mouse movements include a lot of noise (meaningless or inconsistent moves)
+    and have adjusted weight.
 
     NOTE: Regularisation is omitted (handled by weight decay in the optimiser).
     """
@@ -332,8 +334,8 @@ def supervised_loss(
         alpha_flags = torch.cat(
             (
                 demo_action[:, :19],
-                1. - demo_action[:, 31:32],
-                1. - demo_action[:, 56:57],
+                (1. - demo_action[:, 31:32]) / 3.,
+                (1. - demo_action[:, 56:57]) / 3.,
                 1. - demo_action[:, 70:71],
                 torch.zeros_like(focal_term)), dim=1)
 
