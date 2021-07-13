@@ -19,6 +19,7 @@ class SDGServer(Server):
 
     def __init__(self, args: Namespace, assigned_teams: Dict[str, int] = None):
         self.rng = default_rng(args.seed)
+        self.time_scale = args.time_scale
 
         super().__init__(
             args.tick_rate,
@@ -271,7 +272,8 @@ class SDGServer(Server):
         # In buy phase, prevent movement and firing
         grounded = session.phase == GameID.PHASE_BUY
 
-        return player.update(action, session.players, session.objects, session.map, timestamp, lag+lerp, grounded)
+        return player.update(
+            action, session.players, session.objects, session.map, timestamp, lag+lerp, grounded, self.time_scale)
 
     def update_state(
         self,
@@ -343,7 +345,7 @@ class SDGServer(Server):
                     queued_events.append(event)
 
         # Update session
-        self.session.update(dt, queued_events, flag=flag)
+        self.session.update(dt * self.time_scale, queued_events, flag=flag)
 
         # Cache current state data
         self.get_gathered_data_cache(timestamp)

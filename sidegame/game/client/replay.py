@@ -56,6 +56,7 @@ class SDGReplayClient(ReplayClient):
 
         # Set original tick rate
         args.tick_rate = float(args.recording_path.split('/')[-1].split('_')[-2].split('-')[-1])
+        self.time_scale = args.time_scale  # TODO: Inferring original time scale is yet to be implemented
 
         super().__init__(
             args.tick_rate,
@@ -164,7 +165,7 @@ class SDGReplayClient(ReplayClient):
             self.window.refresh()
 
     def generate_output(self, dt: float):
-        self.sim.eval_effects(dt)
+        self.sim.eval_effects(dt * self.time_scale)
 
         if self.headless:
             self.refresh_display()

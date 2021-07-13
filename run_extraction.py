@@ -242,6 +242,7 @@ def parse_args() -> argparse.Namespace:
 if __name__ == '__main__':
     args = parse_args()
     args.focus_record = False
+    args.time_scale = 1.  # TODO: Inferring time scale from replays is yet to be implemented
 
     assert os.path.exists(args.recording_path), 'No recording found on given path.'
     assert not os.path.exists(args.output_path), 'Output file already exists.'

@@ -33,6 +33,8 @@ def parse_args() -> argparse.Namespace:
         help='A specific config among presets in the configuration file.')
 
     parser.add_argument(
+        '--time_scale', type=float, default=1., help='Simulation time factor affecting movement and decay formulae.')
+    parser.add_argument(
         '-t', '--tick_rate', type=float, default=64.,
         help='Rate of updating the game state in ticks per second.')
     parser.add_argument(
@@ -45,6 +47,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         '-n', '--n_subports', '--n_procs', type=int, default=1,
         help='Number of ports following the main one, to be used for spawning session server processes.')
+    parser.add_argument(
+        '--lwtime_scale', type=float, default=8.5,
+        help='Factor for weighting less waiting time (in seconds) wrt. MMR points when estimating a match.')
+    parser.add_argument(
+        '--limit_mmr', action='store_true',
+        help='Use and gradually expand the maximum MMR difference allowed between players on the same team.')
 
     parser.add_argument(
         '--logging_path', type=str, default=None,

@@ -125,6 +125,8 @@ class StatTracker:
 
         self.tracked_scores = {
             'damage': 0.,
+            'kills': 0,
+            'deaths': 0,
             'assists': 0,
             'own_team_kills': 0,
             'suicides': 0,
@@ -133,6 +135,8 @@ class StatTracker:
             'clutch_rounds': 0,
             'clutches': 0,
             'clutchkills': 0,
+            'plants': 0,
+            'defuses': 0,
             'money_spent': 0,
             'distance': 0.,
             'footsteps': 0,
@@ -147,12 +151,14 @@ class StatTracker:
             'takes': 0,
             'ct_rounds': 0,
             'holds': 0,
-            't_wins': 0,
-            'ct_wins': 0,
+            't_rounds_won': 0,
+            'ct_rounds_won': 0,
             'kast_rounds': 0,
             'round_win_shares': 0.,
             'openings': 0,
-            'opening_tries': 0}
+            'opening_tries': 0,
+            'matches_won': 0,
+            'matches': 0}
 
     def save(self) -> str:
         """Add currently tracked stats to all-time stats and save them."""
@@ -249,7 +255,7 @@ class StatTracker:
         self.tracked_heatmap.fill(0.)
         self.last_timestamp = None
 
-    def update_from_state(self, pos: float, timestamp: float):
+    def update_from_state(self, pos: float, timestamp: float, time_scale: float = 1.):
         """
         Update uptime, distance travelled, and heatmap of positions
         (time spent at rounded location).
@@ -258,7 +264,7 @@ class StatTracker:
         if self.own_player.team == GameID.GROUP_SPECTATORS:
             return
 
-        dt = 0. if self.last_timestamp is None else (timestamp - self.last_timestamp)
+        dt = 0. if self.last_timestamp is None else (timestamp - self.last_timestamp) * time_scale
         self.last_timestamp = timestamp
 
         if self.session.phase != GameID.PHASE_BUY and self.own_player.health:
@@ -305,6 +311,7 @@ class StatTracker:
 
                 if planter_id == self.own_player.id:
                     self.temp_scores['planted'] = 1
+                    self.tracked_scores['plants'] += 1
 
             else:
                 self.temp_scores['enemies_planted'] = 1
@@ -318,6 +325,7 @@ class StatTracker:
 
                 if defuser_id == self.own_player.id:
                     self.temp_scores['defused'] = 1
+                    self.tracked_scores['defuses'] += 1
 
         elif event_id == Event.PLAYER_DAMAGE:
             attacker_id = int(event_data[0])
@@ -330,16 +338,18 @@ class StatTracker:
 
             if victim.team != self.own_player.team:
                 # RWS data
-                if attacker.team == self.own_player.team:
+                if attacker.team == self.own_player.team and self.session.phase != GameID.PHASE_RESET:
                     self.temp_scores['total_team_damage'] += damage
 
                 # Other damage-associated data
                 if attacker_id == self.own_player.id:
-                    self.temp_scores['damage'] += damage
                     self.tracked_scores['damage'] += damage
-                    self.temp_player_damage[victim.position_id] += damage
-                    self.temp_last_contact_time[victim.position_id] = timestamp
                     self.tracked_item_damage[item_id] += damage
+
+                    if self.session.phase != GameID.PHASE_RESET:
+                        self.temp_scores['damage'] += damage
+                        self.temp_player_damage[victim.position_id] += damage
+                        self.temp_last_contact_time[victim.position_id] = timestamp
 
         elif event_id == Event.FX_ATTACK:
             attacker_id = int(event_data[0])
@@ -355,7 +365,7 @@ class StatTracker:
                 self.tracked_scores['footsteps'] += 1
 
         # Keep track of flash assists, count debuff as flash damage
-        elif event_id == Event.FX_FLASH:
+        elif event_id == Event.FX_FLASH and self.session.phase != GameID.PHASE_RESET:
             attacker_id = int(event_data[0])
             victim_id = int(event_data[1])
             debuff = event_data[2]
@@ -382,24 +392,27 @@ class StatTracker:
             attacker = self.session.players[attacker_id]
             victim = self.session.players[victim_id]
 
-            # Clutch flag
-            if len(alive_ts) == 1 and alive_ts[0] == self.own_player.id and not self.temp_scores['kills_to_clutch']:
-                self.temp_scores['kills_to_clutch'] = len(alive_cts)
-                self.tracked_scores['clutch_rounds'] += 1
+            if self.session.phase != GameID.PHASE_RESET:
+                # Clutch flag
+                if len(alive_ts) == 1 and alive_ts[0] == self.own_player.id and not self.temp_scores['kills_to_clutch']:
+                    self.temp_scores['kills_to_clutch'] = len(alive_cts)
+                    self.tracked_scores['clutch_rounds'] += 1
 
-            elif len(alive_cts) == 1 and alive_cts[0] == self.own_player.id and not self.temp_scores['kills_to_clutch']:
-                self.temp_scores['kills_to_clutch'] = len(alive_ts)
-                self.tracked_scores['clutch_rounds'] += 1
+                elif len(alive_cts) == 1 and alive_cts[0] == self.own_player.id and (
+                    not self.temp_scores['kills_to_clutch']
+                ):
+                    self.temp_scores['kills_to_clutch'] = len(alive_ts)
+                    self.tracked_scores['clutch_rounds'] += 1
 
-            # Opening
-            if not self.temp_scores['opening_triggered'] and attacker.team != victim.team:
-                self.temp_scores['opening_triggered'] = 1
+                # Opening
+                if not self.temp_scores['opening_triggered'] and attacker.team != victim.team:
+                    self.temp_scores['opening_triggered'] = 1
 
-                if attacker_id == self.own_player.id:
-                    self.tracked_scores['openings'] += 1
-                    self.tracked_scores['opening_tries'] += 1
-                elif victim_id == self.own_player.id:
-                    self.tracked_scores['opening_tries'] += 1
+                    if attacker_id == self.own_player.id:
+                        self.tracked_scores['openings'] += 1
+                        self.tracked_scores['opening_tries'] += 1
+                    elif victim_id == self.own_player.id:
+                        self.tracked_scores['opening_tries'] += 1
 
             if victim_id == self.own_player.id:
                 # KAST flag
@@ -427,11 +440,16 @@ class StatTracker:
                     if victim_id != self.own_player.id:
                         self.tracked_scores['own_team_kills'] += 1
                     else:
+                        self.tracked_scores['deaths'] += 1
                         self.tracked_scores['suicides'] += 1
 
                 # KAST flag
                 elif attacker_id == self.own_player.id:
+                    self.tracked_scores['kills'] += 1
                     self.temp_scores['kast_triggered'] = 1
+
+                elif victim_id == self.own_player.id:
+                    self.tracked_scores['deaths'] += 1
 
         # NOTE: Only considers phases that preceded round win, i.e. excluding reset phase
         elif event_id == Event.CTRL_MATCH_PHASE_CHANGED:
@@ -442,6 +460,14 @@ class StatTracker:
 
                 win = (t_win and self.own_player.team == GameID.GROUP_TEAM_T) or \
                     (not t_win and self.own_player.team == GameID.GROUP_TEAM_CT)
+
+                # Completed matches
+                if (
+                    (self.session.rounds_won_t + self.session.rounds_won_ct) == (2*Session.ROUNDS_TO_SWITCH) or
+                    self.session.rounds_won_t == Session.ROUNDS_TO_WIN or
+                    self.session.rounds_won_ct == Session.ROUNDS_TO_WIN
+                ):
+                    self.tracked_scores['matches'] += 1
 
                 # Completed rounds on a side
                 if self.own_player.team == GameID.GROUP_TEAM_T:
@@ -472,9 +498,16 @@ class StatTracker:
                         self.tracked_scores['holds'] += 1
 
                     if self.own_player.team == GameID.GROUP_TEAM_T:
-                        self.tracked_scores['t_wins'] += 1
+                        self.tracked_scores['t_rounds_won'] += 1
+
+                        if self.session.rounds_won_t == Session.ROUNDS_TO_WIN:
+                            self.tracked_scores['matches_won'] += 1
+
                     else:
-                        self.tracked_scores['ct_wins'] += 1
+                        self.tracked_scores['ct_rounds_won'] += 1
+
+                        if self.session.rounds_won_ct == Session.ROUNDS_TO_WIN:
+                            self.tracked_scores['matches_won'] += 1
 
                     # RWS
                     if self.temp_scores['allies_defused'] or self.temp_scores['allies_planted']:
@@ -581,10 +614,10 @@ class StatTracker:
             ('round_win_share', rws),
             ('success_take', tracked_scores['takes'] / max(1, tracked_scores['t_rounds'])),
             ('success_afterplant', tracked_scores['afterplants'] / max(1, tracked_scores['afterplant_rounds'])),
-            ('success_t_side', tracked_scores['t_wins'] / max(1, tracked_scores['t_rounds'])),
+            ('success_t_side', tracked_scores['t_rounds_won'] / max(1, tracked_scores['t_rounds'])),
             ('success_hold', tracked_scores['holds'] / max(1, tracked_scores['ct_rounds'])),
             ('success_retake', tracked_scores['retakes'] / max(1, tracked_scores['retake_rounds'])),
-            ('success_ct_side', tracked_scores['ct_wins'] / max(1, tracked_scores['ct_rounds']))]
+            ('success_ct_side', tracked_scores['ct_rounds_won'] / max(1, tracked_scores['ct_rounds']))]
 
 
 class FocusTracker:
@@ -629,13 +662,15 @@ class FocusTracker:
         self.y = np.clip(self.y + yrel, 2., 141.)
         self.x = np.clip(self.x + xrel, 2., 253.)
 
-    def register(self, window: np.ndarray, tick_counter: int):
+    def register(self, window: Union[np.ndarray, None], tick_counter: int):
         """Draw focal cursor and log its position."""
 
         if self.mode == self.MODE_NULL or (self.mode == self.MODE_READ and (not self.active or self.hidden)):
             return
 
-        draw_image(window, self.icon_active if self.active else self.icon_inactive, round(self.y)-2, round(self.x)-2)
+        if window is not None:
+            draw_image(
+                window, self.icon_active if self.active else self.icon_inactive, round(self.y)-2, round(self.x)-2)
 
         # Check for mode and rewind
         if self.mode != self.MODE_WRITE or tick_counter < self.recorder.counter:

@@ -26,7 +26,7 @@ class SDGLiveClient(SDGLiveClientBase):
     while a background thread feeds sound chunks into `pyaudio.Stream`.
     """
 
-    WINDOW_NAME = 'SiDeGame v2021-06-21'
+    WINDOW_NAME = 'SiDeGame v2021-07-13'
     RENDER_SIZE = (256, 144)
 
     # Tracked mouse/keyboard state indices
@@ -448,7 +448,7 @@ class SDGLiveClient(SDGLiveClientBase):
         return obj.item.id if obj is not None else GameID.NULL
 
     def generate_output(self, dt: float):
-        self.sim.eval_effects(dt)
+        self.sim.eval_effects(dt * self.time_scale)
         self.strided_refresh()
 
     def refresh_display(self):

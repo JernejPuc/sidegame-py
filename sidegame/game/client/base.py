@@ -29,6 +29,7 @@ class SDGLiveClientBase(LiveClient):
         self.role_key: str = '0x' + args.role_key
         self.session_address = args.address
         self.rng = default_rng(args.seed)
+        self.time_scale = args.time_scale
 
         super().__init__(
             tick_rate=args.tick_rate,
@@ -91,7 +92,7 @@ class SDGLiveClientBase(LiveClient):
 
         if self.stats is not None:
             self.stats.update_from_state(
-                player.pos.copy() if player.pos is self.stats.last_pos else player.pos, timestamp)
+                player.pos.copy() if player.pos is self.stats.last_pos else player.pos, timestamp, self.time_scale)
 
         # (Re)set held item
         if player.held_object is not None and held_object_id and held_object_id != player.held_object.item.id:
@@ -739,7 +740,7 @@ class SDGLiveClientBase(LiveClient):
 
         # Unpack action
         attack, walking, _, _, drop, rld, draw_id, _, cursor_y, force_w, force_d, _, view, _, _, d_angle = action.data
-        dt = action.dt
+        dt = action.dt * self.time_scale
 
         # Increment game time
         if session.phase and not action.processed:

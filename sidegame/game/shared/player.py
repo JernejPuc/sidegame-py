@@ -173,7 +173,8 @@ class Player(Entity, PlayerEntity):
         map_: Map,
         timestamp: float,
         total_lag: float,
-        grounded: bool
+        grounded: bool,
+        time_scale: float = 1.
     ) -> Iterable[Event]:
         """
         Update own state according to an input and generate events to be
@@ -202,7 +203,7 @@ class Player(Entity, PlayerEntity):
             force_d = force_d - 1
 
         # Get time since last update
-        dt = (timestamp - self.states[-1].timestamp) if self.states else 0.
+        dt = time_scale * (timestamp - self.states[-1].timestamp) if self.states else 0.
 
         # Decay/advance time-dependent variables
         self.decay(dt, recoil=True)

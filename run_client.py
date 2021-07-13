@@ -27,6 +27,8 @@ def parse_args() -> argparse.Namespace:
         help='A specific config among presets in the configuration file.')
 
     parser.add_argument(
+        '--time_scale', type=float, default=1., help='Simulation time factor affecting movement and decay formulae.')
+    parser.add_argument(
         '-t', '--tick_rate', type=float, default=64.,
         help='Rate of updating the local game state in ticks (frames) per second.')
     parser.add_argument(
