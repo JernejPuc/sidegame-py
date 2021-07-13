@@ -44,7 +44,7 @@ class SDGMatchmaker(Matchmaker):
     These detached environments act as authoritative servers for
     multiple agents interacting in a shared environment (e.g. game matches).
 
-    CLients looking for a match send over their MMR values,
+    Clients looking for a match send over their MMR values,
     which are used to set up balanced teams of 5v5 players.
 
     After the teams are set up, the agents are assigned to a session handler,
@@ -54,22 +54,28 @@ class SDGMatchmaker(Matchmaker):
     CLIENT_MESSAGE_SIZE: int = SDGServer.CLIENT_MESSAGE_SIZE
     N_PLAYERS_TO_MATCH = 10
 
-    # Each second of less waiting is equivalent to 8.5 MMR diff
-    # Should allow a client that connects after 10 seconds with 50 MMR diff
-    # to overshadow clients connected after 1 or 0 seconds with 100 MMR diff
-    # (note that `get_max mmr diff` only allows 100 MMR diff after 10 seconds itself)
-    LWTIME_TO_MMR_SCALING = 8.5
-
     def __init__(
         self,
         session_args: Namespace,
         address: Tuple[str, int],
         subports: Iterable[int],
-        seed: int = None
+        seed: int = None,
+        lwtime_to_mmr_scale: float = 8.5,
+        expand_mmr_diff_limit: bool = True
     ):
         super().__init__(session_args, address, subports, self.CLIENT_MESSAGE_SIZE)
         self.no_matched_clients: Dict = {}
         self.ref_client: SDGClient = None
+
+        # Each second of less waiting is equivalent to 8.5 MMR diff
+        # Should allow a client that connects after 10 seconds with 50 MMR diff
+        # to overshadow clients connected after 1 or 0 seconds with 100 MMR diff
+        # (note that `get_max_mmr_diff` only allows 100 MMR diff after 10 seconds itself)
+        self.lwtime_to_mmr_scale = lwtime_to_mmr_scale
+
+        # If `False`, `get_max_mmr_diff` will not be called and no MMR restrictions will be applied
+        # Thus, a match will be returned as soon as enough players connect, only subject to team balancing
+        self.expand_mmr_diff_limit = expand_mmr_diff_limit
 
         # NOTE: Seeding random number generators is diminished by network and OS unpredictability
         random.seed(seed)
@@ -91,7 +97,7 @@ class SDGMatchmaker(Matchmaker):
         search would not be worth the computational load and more sophisticated
         methods would be overkill at this point.
 
-        NOTE: For AI setups, this would the second tier of selection;
+        NOTE: For AI setups, this would be the second tier of selection;
         first, the controller should determine which models and actors to spawn,
         these then connect to the matchmaking server and proceed from here.
         With that in mind, it would probably be best to define a new matchmaker,
@@ -159,7 +165,7 @@ class SDGMatchmaker(Matchmaker):
             max(team_1, key=self.mmr_key).mmr - min(team_1, key=self.mmr_key).mmr,
             max(team_2, key=self.mmr_key).mmr - min(team_2, key=self.mmr_key).mmr)
 
-        if max_intra_diff > self.get_max_mmr_diff(timestamp, time_of_first_contact):
+        if self.expand_mmr_diff_limit and max_intra_diff > self.get_max_mmr_diff(timestamp, time_of_first_contact):
             return self.no_matched_clients
 
         # Assign starting team IDs
@@ -193,7 +199,7 @@ class SDGMatchmaker(Matchmaker):
 
         return (
             (client.mmr - self.ref_client.mmr)**2 +
-            ((client.time_of_first_contact - self.ref_client.time_of_first_contact)*self.LWTIME_TO_MMR_SCALING)**2)**0.5
+            ((client.time_of_first_contact - self.ref_client.time_of_first_contact)*self.lwtime_to_mmr_scale)**2)**0.5
 
     @staticmethod
     def get_max_mmr_diff(timestamp: float, time_of_first_contact: float) -> float:

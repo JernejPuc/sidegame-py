@@ -243,11 +243,28 @@ class Matchmaker(ABC):
             except KeyboardInterrupt:
                 break
 
-        self.logger.info('Stopping...')
+        self.logger.info('Waiting for sessions to finish...')
 
         # Exit when all spawned processes finish
+        force_termination = False
+        join_timeout = 1.
+
         for session, _ in running_sessions:
-            session.join()
+            while session.exitcode is None:
+                if force_termination:
+                    session.terminate()
+
+                try:
+                    session.join(join_timeout)
+
+                except KeyboardInterrupt:
+                    if not force_termination:
+                        self.logger.info('Forcing shutdown...')
+
+                    force_termination = True
+                    join_timeout = None
+
+            session.close()
 
         self.reception_socket.close()
 

@@ -13,5 +13,5 @@ if __name__ == '__main__':
     address = (args.address, args.main_port)
     subports = list(range(args.main_port+1, args.main_port+1+args.n_subports))
 
-    server = SDGMatchmaker(args, address, subports)
+    server = SDGMatchmaker(args, address, subports, args.seed, args.lwtime_scale, args.limit_mmr)
     sys.exit(server.run())

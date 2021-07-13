@@ -214,7 +214,7 @@ class TickLimiter(MovingAverageTracker):
 
     In comparison, `SDL_Delay` is most often within 10% of the 1ms target,
     but it can only work with discrete ms steps instead of fractions.
-    Because `sleep` seems to work fine in Linux, the delay function is
+    Because `sleep` seems to work fine on Linux, the delay function is
     system-specific.
 
     See: https://stackoverflow.com/questions/1133857/how-accurate-is-pythons-time-sleep/15967564#15967564
