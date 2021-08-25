@@ -1,4 +1,4 @@
-"""Extraction of success-oriented values from the game state in SDG."""
+"""Extraction of game scores, markings, and utilisation."""
 
 import os
 import json
@@ -6,6 +6,7 @@ import struct
 from logging import Logger
 from time import asctime
 from typing import List, Tuple, Union
+import psutil
 import numpy as np
 from sidegame.graphics import draw_image
 from sidegame.networking.core import Recorder
@@ -317,7 +318,7 @@ class StatTracker:
                 self.temp_scores['enemies_planted'] = 1
 
         elif event_id == Event.C4_DEFUSED:
-            defuser_id = int(event_data[0])
+            defuser_id = int(event_data[1])
 
             # Flag for RWS
             if defuser_id in self.session.groups[self.own_player.team]:
@@ -420,36 +421,36 @@ class StatTracker:
                 # On subsequent death event, if attacker dies and timestamp of that is within 5 seconds, log as trade
                 self.temp_killer_info = (attacker_id, timestamp)
 
-            else:
-                if victim.team == enemy_team and attacker_id != self.own_player.id:
-                    damage_to_victim = self.temp_player_damage[victim.position_id]
+            if victim.team == enemy_team and attacker_id != self.own_player.id:
+                damage_to_victim = self.temp_player_damage[victim.position_id]
 
-                    # Assist check, recent damage (or flash) counts towards assists as well
-                    if damage_to_victim > 40. or (timestamp - self.temp_last_contact_time[victim.position_id]) < 5.:
-                        self.tracked_scores['assists'] += 1
-                        self.temp_scores['kast_triggered'] = 1
-
-                    # KAST flag (trade)
-                    if self.temp_killer_info is not None and victim_id == self.temp_killer_info[0] and (
-                        timestamp - self.temp_killer_info[1]
-                    ) < 5.:
-                        self.temp_scores['kast_triggered'] = 1
-
-                # Friendly fire check
-                elif victim.team == self.own_player.team and attacker_id == self.own_player.id:
-                    if victim_id != self.own_player.id:
-                        self.tracked_scores['own_team_kills'] += 1
-                    else:
-                        self.tracked_scores['deaths'] += 1
-                        self.tracked_scores['suicides'] += 1
-
-                # KAST flag
-                elif attacker_id == self.own_player.id:
-                    self.tracked_scores['kills'] += 1
+                # Assist check, recent damage (or flash) counts towards assists as well
+                if damage_to_victim > 40. or (timestamp - self.temp_last_contact_time[victim.position_id]) < 5.:
+                    self.tracked_scores['assists'] += 1
                     self.temp_scores['kast_triggered'] = 1
 
-                elif victim_id == self.own_player.id:
+                # KAST flag (trade)
+                if self.temp_killer_info is not None and victim_id == self.temp_killer_info[0] and (
+                    timestamp - self.temp_killer_info[1]
+                ) < 5.:
+                    self.temp_scores['kast_triggered'] = 1
+
+            # Friendly fire check
+            elif victim.team == self.own_player.team and attacker_id == self.own_player.id:
+                if victim_id != self.own_player.id:
+                    self.tracked_scores['own_team_kills'] += 1
+                else:
                     self.tracked_scores['deaths'] += 1
+                    self.tracked_scores['suicides'] += 1
+
+            # KAST flag
+            elif attacker_id == self.own_player.id:
+                self.tracked_scores['kills'] += 1
+                self.temp_scores['kills_this_round'] += 1
+                self.temp_scores['kast_triggered'] = 1
+
+            elif victim_id == self.own_player.id:
+                self.tracked_scores['deaths'] += 1
 
         # NOTE: Only considers phases that preceded round win, i.e. excluding reset phase
         elif event_id == Event.CTRL_MATCH_PHASE_CHANGED:
@@ -459,7 +460,7 @@ class StatTracker:
                 t_win = bool(event_data[0])
 
                 win = (t_win and self.own_player.team == GameID.GROUP_TEAM_T) or \
-                    (not t_win and self.own_player.team == GameID.GROUP_TEAM_CT)
+                    ((not t_win) and self.own_player.team == GameID.GROUP_TEAM_CT)
 
                 # Completed matches
                 if (
@@ -511,16 +512,16 @@ class StatTracker:
 
                     # RWS
                     if self.temp_scores['allies_defused'] or self.temp_scores['allies_planted']:
-                        rws = 0.7 * self.temp_scores['damage'] / max(1., self.temp_scores['total_team_damage']) + \
+                        rws = 0.7 * self.temp_scores['damage'] / self.temp_scores['total_team_damage'] + \
                             (0.3 if self.temp_scores['defused'] or self.temp_scores['planted'] else 0.)
                     else:
-                        rws = self.temp_scores['damage'] / max(1., self.temp_scores['total_team_damage'])
+                        rws = self.temp_scores['damage'] / self.temp_scores['total_team_damage']
 
                     self.tracked_scores['round_win_shares'] += rws
 
                 # Kills
                 if self.temp_scores['kills_this_round'] > 1:
-                    self.tracked_scores['multikill_rounds'] += 1.
+                    self.tracked_scores['multikill_rounds'] += 1
                     self.tracked_scores['multikills'] += self.temp_scores['kills_this_round']
 
                 # KAST
@@ -720,3 +721,91 @@ class FocusTracker:
                 self.hidden = bool(hidden)
 
             del self.recorder.buffer[0]
+
+
+class PerfMonitor:
+    """
+    Performance monitoring for ticking processes.
+    Monitor for FPS, CPU perc. utilisation, and memory usage.
+    """
+
+    def __init__(self, pid: int = None, path: str = None):
+        self.data = {
+            k: 0. for k in (
+                'fps_sum', 'fps_sum2', 'fps_min', 'fps_max', 'fps_avg', 'fps_std',
+                'cpu_sum', 'cpu_sum2', 'cpu_min', 'cpu_max', 'cpu_avg', 'cpu_std',
+                'mem_sum', 'mem_sum2', 'mem_min', 'mem_max', 'mem_avg', 'mem_std', 'num')}
+
+        self.data['num'] = 0
+
+        self.sum_keys = ('fps_sum', 'cpu_sum', 'mem_sum')
+        self.sum2_keys = ('fps_sum2', 'cpu_sum2', 'mem_sum2')
+        self.min_keys = ('fps_min', 'cpu_min', 'mem_min')
+        self.max_keys = ('fps_max', 'cpu_max', 'mem_max')
+        self.avg_keys = ('fps_avg', 'cpu_avg', 'mem_avg')
+        self.std_keys = ('fps_std', 'cpu_std', 'mem_std')
+        self.data_keys = (self.sum2_keys, self.sum_keys, self.min_keys, self.max_keys)
+        self.stat_keys = (self.sum2_keys, self.sum_keys, self.avg_keys, self.std_keys)
+
+        for k in self.min_keys:
+            self.data[k] = float('inf')
+
+        self.proc = psutil.Process(os.getpid() if pid is None else pid)
+        self.path = path
+
+    def update_data(self, fps: float = 0.):
+        """Update monitoring data."""
+
+        cpu_perc = self.proc.cpu_percent()
+        mem_res = self.proc.memory_info().rss / 1024**2
+
+        for ksum2, ksum, kmin, kmax, val in zip(*self.data_keys, (fps, cpu_perc, mem_res)):
+
+            # Unrolled std components
+            self.data[ksum2] += val**2
+            self.data[ksum] += val
+
+            # Peaks/drops
+            if val < self.data[kmin] and val != 0.:
+                self.data[kmin] = val
+
+            if val > self.data[kmax]:
+                self.data[kmax] = val
+
+        self.data['num'] += 1
+
+    def update_stats(self):
+        """Infer mean and standard deviation per monitored quantity."""
+
+        num = self.data['num']
+
+        if not num:
+            return
+
+        for ksum2, ksum, kavg, kstd in zip(*self.stat_keys):
+            self.data[kavg] = self.data[ksum] / num
+            self.data[kstd] = self.get_std(self.data[ksum2], self.data[ksum], self.data[kavg], num)
+
+    @staticmethod
+    def get_std(sum2: float, sum1: float, avg: float, num: int) -> float:
+        """Infer standard deviation from unrolled term."""
+
+        return max(0., (sum2 - 2*sum1*avg + num*avg**2) / num)**0.5
+
+    def save(self):
+        """Save monitoring stats and data."""
+
+        if self.path is None:
+            return
+
+        if os.path.exists(self.path):
+            with open(self.path, 'r') as data_file:
+                data = json.load(data_file)
+
+        else:
+            data = {}
+
+        data[asctime()] = self.data
+
+        with open(self.path, 'w') as data_file:
+            json.dump(data, data_file)

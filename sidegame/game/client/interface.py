@@ -14,7 +14,7 @@ import sdl2.ext
 from sidegame.networking.core import StridedFunction
 from sidegame.game.shared import GameID, Map, Item, Player
 from sidegame.game.client.base import SDGLiveClientBase
-from sidegame.game.client.tracking import DATA_DIR
+from sidegame.game.client.tracking import DATA_DIR, PerfMonitor
 
 
 class SDGLiveClient(SDGLiveClientBase):
@@ -66,6 +66,15 @@ class SDGLiveClient(SDGLiveClientBase):
         # Decoupled refresh allows the game state to be processed at higher framerate than e.g. 60Hz monitor limit
         # without the cost of actually rendering a frame
         self.strided_refresh: Callable = StridedFunction(self.refresh_display, args.tick_rate / args.refresh_rate)
+
+        # Perf. monitoring
+        if args.monitoring_path:
+            self.monitor = PerfMonitor(path=args.monitoring_path)
+            self.strided_monitor = StridedFunction(self.monitor.update_data, (args.tick_rate / args.monitoring_rate))
+
+        else:
+            self.monitor = None
+            self.strided_monitor = None
 
     def poll_user_input(self, timestamp: float) -> Tuple[Any, Union[Any, None]]:
         """
@@ -451,6 +460,9 @@ class SDGLiveClient(SDGLiveClientBase):
         self.sim.eval_effects(dt * self.time_scale)
         self.strided_refresh()
 
+        if self.strided_monitor is not None and self.sim.view != GameID.VIEW_LOBBY:
+            self.strided_monitor(self._fps_limiter.value)
+
     def refresh_display(self):
         """
         Produce a new frame, upscale it, and update the image on screen.
@@ -474,6 +486,12 @@ class SDGLiveClient(SDGLiveClientBase):
             path_to_stats = self.stats.save()
 
             self.logger.info('Stats saved to: %s', path_to_stats)
+
+        if self.monitor is not None:
+            self.monitor.update_stats()
+            self.monitor.save()
+
+            self.logger.info('Monitoring saved to: %s', self.monitor.path)
 
         self.sim.audio_system.stop()
         sdl2.SDL_Quit()

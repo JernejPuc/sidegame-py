@@ -4,3 +4,4 @@ opencv-contrib-python-headless
 pysdl2-dll
 pysdl2
 pyaudio
+psutil

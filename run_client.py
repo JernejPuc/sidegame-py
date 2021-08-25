@@ -99,6 +99,11 @@ def parse_args() -> argparse.Namespace:
         '--focus_path', type=str, default=None, help='Path to a recording of focal coordinates.')
     parser.add_argument(
         '--focus_record', action='store_true', help='Whether to record or replay focal coordinates.')
+    parser.add_argument(
+        '--monitoring_path', type=str, default=None, help='Path where monitoring results will be saved to.')
+    parser.add_argument(
+        '--monitoring_rate', type=float, default=10.,
+        help='Rate of updating monitoring data: FPS, CPU perc. utilisation, and memory usage. Off by default.')
 
     args, remaining_args = config_parser.parse_known_args()
 
