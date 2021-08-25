@@ -691,7 +691,7 @@ class SDGLiveClientBase(LiveClient):
                 # Add chat entry
                 sim.add_chat_entry(Message(
                     GameID.NULL,
-                    session.rounds_won_t + session.rounds_won_ct,
+                    session.rounds_won_t + session.rounds_won_ct+1,
                     session.total_round_time,
                     [attacker_pos_id, GameID.TERM_KILL, player.position_id, GameID.TERM_STOP]))
 

@@ -23,6 +23,10 @@ class SDGClient(Client):
         self.mmr: float = None
         self.name: str = None
         self.team: int = None
+        self.hash_val = hash((own_address[0], own_address[1], timestamp))
+
+    def __hash__(self):
+        return self.hash_val
 
     def unpack_client_data(self, data: bytes):
         request = SDGServer.unpack_single(data)[0].data
