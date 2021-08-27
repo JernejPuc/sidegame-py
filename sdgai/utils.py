@@ -419,7 +419,7 @@ class SequenceIterator:
 
         max_length = self.total_length - self.slice_length
 
-        if self.exp_length_on_reset is not None:
+        if self.exp_length_on_reset is not None and self.exp_length_on_reset:
             exp_length = int(self.slice_length * self.exp_length_on_reset ** self.exp_length_ctr)
 
             if exp_length < max_length:

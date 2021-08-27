@@ -367,8 +367,9 @@ class PCNet(nn.Module):
     """
     Peripheral-compatible recurrent neural network.
 
-    The name is intended to allude to the personal computer, but otherwise
-    refers to its interface with audio-visual inputs and mouse/keyboard outputs.
+    The name is intended to allude to the personal computer or predictive client,
+    but otherwise refers to its interface with audio-visual inputs and
+    mouse/keyboard outputs.
 
     Layers of the network take different amounts of time to process, and,
     along with external factors, there is a possibility of racing conditions
