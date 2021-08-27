@@ -71,7 +71,7 @@ and [pyaudio](https://people.csail.mit.edu/hubert/pyaudio/) for more details.
 
 ### `sdglib`
 
-Note that `sidegame` relies on a small library of its own.
+Note that `sidegame` relies on a small extension of its own.
 In `sidegame/ext`, you can find multiple binary files:
 - `sdglib37.pyd` (Windows)
 - `sdglib39.pyd` (Windows)
@@ -179,7 +179,10 @@ Actor implementations can inherit from the `sidegame.game.client.base::SDGLiveCl
 class and facilitate interaction with a pre-trained model, remote inference or
 optimisation servers, etc.
 
-An example implementation can be viewed in a separate, though related, repository (WIP).
+Examples can be viewed in the form of `sdgai.actor::SDGSimpleActor` and
+`sdgai.actor::SDGRemoteActor`. They can be used with `models/pcnet-sl`,
+a model trained with imitation learning via `run_supervised.py`,
+although highly overfitted and not very useful in practice.
 
 
 ### Notes on performance
@@ -257,3 +260,10 @@ before searching for and connecting to a session.
 
 ![lobby](user_data/screenshot_010.png)
 ![lobby](user_data/screenshot_011.png)
+
+
+## Citation
+
+`sidegame-py` was created in the scope of my master's thesis, which will be
+linked to shortly. The latter was not written in English, hence English papers
+and/or documentation could still be forthcoming.
