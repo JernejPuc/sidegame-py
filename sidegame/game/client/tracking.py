@@ -511,11 +511,16 @@ class StatTracker:
                             self.tracked_scores['matches_won'] += 1
 
                     # RWS
+                    if self.temp_scores['total_team_damage'] == 0.:
+                        damage_contribution = 1. / len(self.session.groups[self.own_player.team])
+                    else:
+                        damage_contribution = self.temp_scores['damage'] / self.temp_scores['total_team_damage']
+
                     if self.temp_scores['allies_defused'] or self.temp_scores['allies_planted']:
-                        rws = 0.7 * self.temp_scores['damage'] / self.temp_scores['total_team_damage'] + \
+                        rws = 0.7 * damage_contribution + \
                             (0.3 if self.temp_scores['defused'] or self.temp_scores['planted'] else 0.)
                     else:
-                        rws = self.temp_scores['damage'] / self.temp_scores['total_team_damage']
+                        rws = damage_contribution
 
                     self.tracked_scores['round_win_shares'] += rws
 
