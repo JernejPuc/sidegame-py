@@ -142,8 +142,9 @@ class SDGReplayClient(ReplayClient):
         frame = self.sim.get_frame()
 
         # Add focus marker
-        self.focus.get(self._tick_counter)
-        self.focus.register(frame, self._tick_counter)
+        # NOTE: Tick counter was incremented after extracting data for the current tick, hence the -1
+        self.focus.get(self._tick_counter-1)
+        self.focus.register(frame, self._tick_counter-1)
 
         # Update externally accessible image and audio buffer
         if self.headless:
@@ -453,7 +454,7 @@ class SDGReplayClient(ReplayClient):
         self.sim.audio_system.stop()
         sdl2.SDL_Quit()
 
-    def manual_step(self, previous_clock: Union[float, None]) -> Union[float, None]:
+    def manual_step(self, previous_clock: Union[float, None], generate_obs: bool = True) -> Union[float, None]:
         """Manually step the simulation. Intended for use in tandem with headless mode."""
 
         if not self.recording:
@@ -463,6 +464,32 @@ class SDGReplayClient(ReplayClient):
         dt_loop = (current_clock - previous_clock) if previous_clock is not None else 0.
 
         # Advance local state
-        self.step(dt_loop, current_clock)
+        if generate_obs:
+            self.step(dt_loop, current_clock)
+
+        else:
+            # Check for and unpack server data
+            server_data = self._get_server_data(current_clock)
+            state_updates = self._get_state_updates(server_data) if server_data else None
+
+            # Update local state wrt. state on the server
+            self._eval_server_state(state_updates, current_clock)
+
+            # Update local state wrt. user input
+            user_input = self._get_user_input(current_clock)
+            action = self._eval_input(user_input, current_clock) if user_input else None
+
+            # Update foreign entities wrt. estimated server time
+            self._interpolate_foreign_entities(current_clock + self._clock_diff_tracker.value - self._interp_window)
+
+            # Record, send, and/or clean up
+            self._relay(server_data, action, current_clock, self._clock_diff_tracker.value)
+
+            # Generate min output
+            self.sim.eval_effects(dt_loop * self.time_scale)
+            self.focus.get(self._tick_counter-1)
+
+            for channel in self.sim.audio_system._audio_channels:
+                channel.clear()
 
         return current_clock
