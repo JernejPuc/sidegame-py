@@ -4,11 +4,15 @@
 in a cooperation- and communication-based competitive setting, designed to be
 consistent across human and AI interfaces.
 
-![lobby](user_data/screenshot_000.png)
-![lobby](user_data/screenshot_001.png)
+<p float="center">
+  <img src="user_data/screenshot_000.png" width="49%" />
+  <img src="user_data/screenshot_001.png" width="49%" /> 
+</p>
 
-![lobby](user_data/screenshot_002.png)
-![lobby](user_data/screenshot_003.png)
+<p float="center">
+  <img src="user_data/screenshot_002.png" width="49%" />
+  <img src="user_data/screenshot_003.png" width="49%" /> 
+</p>
 
 
 ## Disclaimer
@@ -180,7 +184,7 @@ class and facilitate interaction with a pre-trained model, remote inference or
 optimisation servers, etc.
 
 Examples can be viewed in the form of `sdgai.actor::SDGSimpleActor` and
-`sdgai.actor::SDGRemoteActor`. They can be used with `models/pcnet-sl`,
+`sdgai.actor::SDGRemoteActor`. They can be used with `models/pcnet-sl.pth`,
 a model trained with imitation learning via `run_supervised.py`,
 although highly overfitted and not very useful in practice.
 
@@ -225,7 +229,7 @@ by e.g. disregarding effects out of line of sight and optimising effect handling
 - Add checksums or something that would validate packet structure and content wrt. current
 state of the match and participants before it is attempted to be unpacked and applied.
 
-- Add a time scale option and means to convey it between server and clients.
+- Add a dynamic time scale option and means to convey it between server and clients.
 If a change occurs while running, FPS/tick rates need to be changed accordingly.
 
 - Enable spawning and despawning of dummy entities on the server for testing,
@@ -249,21 +253,30 @@ before searching for and connecting to a session.
 
 ## More screenshots
 
-![lobby](user_data/screenshot_004.png)
-![lobby](user_data/screenshot_005.png)
+<p float="center">
+  <img src="user_data/screenshot_004.png" width="49%" />
+  <img src="user_data/screenshot_005.png" width="49%" /> 
+</p>
 
-![lobby](user_data/screenshot_006.png)
-![lobby](user_data/screenshot_007.png)
+<p float="center">
+  <img src="user_data/screenshot_006.png" width="49%" />
+  <img src="user_data/screenshot_007.png" width="49%" /> 
+</p>
 
-![lobby](user_data/screenshot_008.png)
-![lobby](user_data/screenshot_009.png)
+<p float="center">
+  <img src="user_data/screenshot_008.png" width="49%" />
+  <img src="user_data/screenshot_009.png" width="49%" /> 
+</p>
 
-![lobby](user_data/screenshot_010.png)
-![lobby](user_data/screenshot_011.png)
+<p float="center">
+  <img src="user_data/screenshot_010.png" width="49%" />
+  <img src="user_data/screenshot_011.png" width="49%" /> 
+</p>
 
 
 ## Citation
 
-`sidegame-py` was created in the scope of my master's thesis, which will be
-linked to shortly. The latter was not written in English, hence English papers
-and/or documentation could still be forthcoming.
+`sidegame-py` was created in the scope of my master's thesis:
+[Online benchmark environment for multi-agent reinforcement learning](https://repozitorij.uni-lj.si/IzpisGradiva.php?id=129594&lang=eng).
+The latter was not written in English; a short paper in English will be linked
+to shortly and papers following up on some specifics could still be forthcoming.
