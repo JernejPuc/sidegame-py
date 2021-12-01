@@ -276,7 +276,31 @@ before searching for and connecting to a session.
 
 ## Citation
 
-`sidegame-py` was created in the scope of my master's thesis:
-[Online benchmark environment for multi-agent reinforcement learning](https://repozitorij.uni-lj.si/IzpisGradiva.php?id=129594&lang=eng).
-The latter was not written in English; a short paper in English will be linked
-to shortly and papers following up on some specifics could still be forthcoming.
+`sidegame-py` was created in the scope of my [master's thesis](https://plus.si.cobiss.net/opac7/bib/75138819) (in Slovene):
+
+```
+@article{Puc_2021,
+ title={Online benchmark environment for multi-agent reinforcement learning: Master's thesis},
+ author={Puc, Jernej},
+ year={2021},
+ url={https://repozitorij.uni-lj.si/IzpisGradiva.php?lang=eng&id=129594}}
+```
+
+A much shorter [conference paper](https://plus.si.cobiss.net/opac7/bib/86401795) is available in English:
+
+```
+@inproceedings{Puc_Sadikov_2021,
+ title={SiDeGame: An Online Benchmark Environment for Multi-Agent Reinforcement Learning},
+ author={Puc, Jernej and Sadikov, Aleksander},
+ booktitle={Slovenian Conference on Artificial Intelligence, Proceedings of the 24th international multiconference: Information Society - IS 2021, volume A},
+ publisher={Institute Jožef Stefan},
+ editor={Luštrek, Mitja and Gams, Matjaž and Piltaver, Rok},
+ ISBN={2630-371X},
+ ISSN={2630-371X},
+ year={2021},
+ month={oct},
+ pages={35–38},
+ url={http://library.ijs.si/Stacks/Proceedings/InformationSociety/2021/IS2021_Volume_A.pdf}}
+```
+
+Papers following up on some specifics could still be forthcoming.
