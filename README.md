@@ -221,36 +221,6 @@ you to configure the Firewall settings on participating devices, set up
 port forwarding, etc.
 
 
-## Backlog
-
-- Prevent FPS drops and sound tearing in situations with many simultaneous effects
-by e.g. disregarding effects out of line of sight and optimising effect handling in general.
-
-- Add checksums or something that would validate packet structure and content wrt. current
-state of the match and participants before it is attempted to be unpacked and applied.
-
-- Add a dynamic time scale option and means to convey it between server and clients.
-If a change occurs while running, FPS/tick rates need to be changed accordingly.
-
-- Enable spawning and despawning of dummy entities on the server for testing,
-i.e. still player bots detached from clients.
-
-- Allow clients to gracefully disconnect, i.e. without the server having to
-handle a disconnection or timeout error.
-
-- Allow disconnected clients to reconnect and resume their state
-instead of automatically clearing associated data/objects on disconnection.
-
-- Implement "kick player" command, i.e. disconnect them, clear their node,
-and blacklist their address in the data receiving step.
-
-- Use hashes, e.g. `sha256`, (or something that would protect data in transit as well)
-for role (or user) credentials instead of clear text.
-
-- Detach UI from server login, i.e. show window and enable the console (lobby)
-before searching for and connecting to a session.
-
-
 ## More screenshots
 
 <p float="center">
@@ -303,4 +273,64 @@ A much shorter [conference paper](https://plus.si.cobiss.net/opac7/bib/86401795)
  url={http://library.ijs.si/Stacks/Proceedings/InformationSociety/2021/IS2021_Volume_A.pdf}}
 ```
 
-Papers following up on some specifics could still be forthcoming.
+After a new round of updates and reinforcement learning experiments is concluded,
+another paper will be forthcoming.
+
+
+## Going forward
+
+Despite a year of inactivity, the prospect of revisiting SiDeGame remains.
+The following open issues will be addressed in 2023:
+
+
+#### Gameplay
+- Add option to create detached client nodes to spawn dummy entities.
+- Add more maps by modifying the original map for different team sizes:
+  1v0 (aim practice), 1v1, 2v2, 3v3, 4v4, 5v5 (existing/original).
+
+#### Accessibility
+- Use numba JIT compilation to avoid the need for precompiled custom rust extensions.
+
+#### Optimisation
+- Use numba to optimise physics, logic, and drawing wherever possible and beneficial.
+- Use asyncIO to prevent client-server communication from blocking the client loop.
+- Define a custom warping method to fix the graphical artifacts of visual effects.
+- Perform a distance check and line-of-sight masking before drawing visual effects.
+
+#### User interface
+- GPU accelerate base frame upscaling and window rendering by converting frame arrays
+  to texture objects for SDL2's renderer.
+- Use asyncIO to prevent window rendering from blocking the client loop.
+- Use asyncIO to avoid the need for a separate thread to write to the audio stream.
+- Allow the client loop to run regardless of server connection,
+  rendering the console/lobby view.
+
+#### Networking
+- Add an event to signal the server to handle intended disconnections
+  immediately instead of eventually catching a timeout or related errors.
+- Keep the state of unexpectedly disconnected clients and allow them to resume from it
+  if they manage to reconnect.
+- Implement a fused AI client-server that can run several match sessions
+  in lockstep (synchronous) mode.
+
+#### Security
+- Add options for the server to update and search through a list of allowed and blocked IPs.
+
+#### Matchmaking
+- Add options for the client to update and search through a list of known server IPs.
+- Add "kick player" admin command to disconnect them, clear their node,
+  and place their address on a temporary blacklist.
+
+#### Data extraction
+- Add option to produce segmentation maps for every frame.
+
+#### AI agents
+- Remove current imitation learning implementation and model.
+- Revise the policy and valuator model architectures.
+- Revise the RL implementation for the lockstep setting and update the algorithm to PPG.
+- Pretrain the visual encoder part of the model on frame-segmentation pairs.
+- Add trained policy models for each stage of a curriculum of transferring agents
+  from smaller to larger maps and team sizes.
+
+#### Presentation
+- Record demos of human and AI play and embed uploaded videos on the front page.
