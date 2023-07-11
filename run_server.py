@@ -1,12 +1,14 @@
 #!/usr/bin/env python
 
-"""Run `SDGServer` with specified settings."""
+"""Run `SDGServer` or `SDGMatchmaker` with specified settings."""
 
+import argparse
+import json
 import os
 import sys
-import json
-import argparse
 from logging import DEBUG
+
+from sidegame.game.matchmaking import SDGMatchmaker
 from sidegame.game.server import SDGServer
 
 
@@ -31,6 +33,8 @@ def parse_args() -> argparse.Namespace:
     config_parser.add_argument(
         '-c', '--config', type=str, default='ServerDefault',
         help='A specific config among presets in the configuration file.')
+
+    parser.add_argument('-m', '--mode', type=str, default='client', help='Switch between scripts to run.')
 
     parser.add_argument(
         '--time_scale', type=float, default=1., help='Simulation time factor affecting movement and decay formulae.')
@@ -89,8 +93,21 @@ def parse_args() -> argparse.Namespace:
 
 
 if __name__ == '__main__':
-    parsed_args = parse_args()
-    parsed_args.port = parsed_args.main_port
+    args = parse_args()
 
-    server = SDGServer(parsed_args)
+    if args.mode == 'server':
+        args.port = args.main_port
+
+        server = SDGServer(args)
+
+    elif args.mode == 'matchmaking':
+        address = (args.address, args.main_port)
+        subports = list(range(args.main_port+1, args.main_port+1+args.n_subports))
+
+        server = SDGMatchmaker(args, address, subports, args.seed, args.lwtime_scale, args.limit_mmr)
+
+    else:
+        print(f'Mode {args.mode} not recognised.')
+        raise SystemExit
+
     sys.exit(server.run())

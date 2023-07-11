@@ -1,13 +1,12 @@
-#!/usr/bin/env python
-
 """Extract observations from recorded SDG demos."""
 
-import os
 import argparse
-from logging import DEBUG
+import os
 from collections import deque
+
 import numpy as np
 import h5py
+
 from sidegame.game.shared import GameID
 from sidegame.game.client import SDGReplayClient
 from sidegame.audio import get_mel_basis, spectrify
@@ -192,55 +191,7 @@ class FocusSampler:
             _ = self.rng.uniform(size=batch_size)
 
 
-def parse_args() -> argparse.Namespace:
-    """Parse extraction args."""
-
-    parser = argparse.ArgumentParser(description='Argument parser for data extraction from SDG demo files.')
-
-    parser.add_argument(
-        '-r', '--recording_path', type=str, required=True,
-        help='Path to an existing recording of network data exchanged with the server.')
-    parser.add_argument(
-        '-o', '--output_path', type=str, required=True,
-        help='Path to which the extracted data will be written.')
-    parser.add_argument(
-        '-k', '--sequence_key', type=int, required=True,
-        help='Unique key by which the sequence source of the data will be identified.')
-
-    parser.add_argument(
-        '-f', '--focus_path', type=str, default=None, help='Path to a recording of focal coordinates.')
-
-    parser.add_argument(
-        '--seed', type=int, default=42,
-        help='Seed for initialising random number generators.')
-    parser.add_argument(
-        '--frame_limit', type=int, default=1000000,
-        help='Maximum number of ticks/frames that can be processed per extraction.')
-    parser.add_argument(
-        '--sub_px_threshold', type=float, default=0.75,
-        help='RNG threshold to treat rounded 1px mouse movement as sub-1px instead.')
-
-    parser.add_argument(
-        '--logging_path', type=str, default=None,
-        help='If given, execution logs are written to a file at the specified location instead of stdout.')
-    parser.add_argument(
-        '--logging_level', type=int, default=DEBUG,
-        help='Threshold above the severity of which the runtime messages are logged or displayed.')
-    parser.add_argument(
-        '--show_fps', action='store_true',
-        help='Print tracked frames-per-second to stdout.')
-    parser.add_argument(
-        '--render_scale', type=float, default=1,
-        help='Factor by which the base render is upscaled. Determines the width and height of the window.')
-    parser.add_argument(
-        '--volume', type=float, default=1.,
-        help='Initial factor by which in-game sound amplitudes are scaled.')
-
-    return parser.parse_args()
-
-
-if __name__ == '__main__':
-    args = parse_args()
+def extract(args: argparse.Namespace):
     args.focus_record = False
     args.time_scale = 1.  # TODO: Inferring time scale from replays is yet to be implemented
 

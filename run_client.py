@@ -26,6 +26,8 @@ def parse_args() -> argparse.Namespace:
         '-c', '--config', type=str, default='ClientDefault',
         help='A specific config among presets in the configuration file.')
 
+    parser.add_argument('-m', '--mode', type=str, default='client', help='Switch between scripts to run.')
+
     parser.add_argument(
         '--time_scale', type=float, default=1., help='Simulation time factor affecting movement and decay formulae.')
     parser.add_argument(
@@ -91,7 +93,7 @@ def parse_args() -> argparse.Namespace:
         '-i', '--name', '--player_id', type=str, default='user',
         help='4-character name used to introduce a client to the server. Used to distinguish between clients.')
     parser.add_argument(
-        '-m', '--mmr', type=float, default=0.,
+        '--mmr', type=float, default=0.,
         help='Matchmaking rating (MMR) used to route a client through the matchmaking server. '
         'If 0, the address and port are assumed to belong to a session server, which will be contacted directly.')
 
