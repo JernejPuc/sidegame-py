@@ -54,7 +54,7 @@ class ClientBase(ABC):
         self._interp_window = interp_window
         self._clock_diff_tracker = MovingAverageTracker(round(tick_rate))
         self._clock_diff_tracker.value = init_clock_diff
-        self._clock_diff_tracker.offset = (1. / (tick_rate - 1.)) / 2.
+        self._clock_diff_tracker.offset = 1. / tick_rate / 2.
 
     @abstractmethod
     def run(self):
@@ -693,7 +693,7 @@ class ReplayClient(ClientBase):
                             continue
 
                         else:
-                            current_clock = previous_clock + 1. / (self._original_tick_rate - 1.)
+                            current_clock = previous_clock + 1. / self._original_tick_rate
 
                     dt_loop = (current_clock - previous_clock) if previous_clock is not None else 0.
                     previous_clock = current_clock
@@ -756,7 +756,7 @@ class ReplayClient(ClientBase):
                     continue
 
                 else:
-                    current_clock = previous_clock + 1. / (self._original_tick_rate - 1.)
+                    current_clock = previous_clock + 1. / self._original_tick_rate
 
             previous_clock = current_clock
 

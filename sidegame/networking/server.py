@@ -66,7 +66,7 @@ class Server(ABC):
         self._queued_local_logs: Deque[Action] = deque()
         self._queued_events: Deque[EventBase] = deque()
 
-        self._tick_interval = 1. / (tick_rate - 1.)
+        self._tick_interval = 1. / tick_rate
         self._update_rate = update_rate
 
         # Detach sending updates from tick rate

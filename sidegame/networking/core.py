@@ -232,7 +232,7 @@ class TickLimiter(MovingAverageTracker):
         super().__init__(round(tick_rate), display_prefix=display_prefix, display_suffix=display_suffix, level=level)
 
         self.tick_rate = tick_rate
-        self.update_interval = 1. / (tick_rate - 1.)
+        self.update_interval = 1. / tick_rate
         self.delay: Callable = (lambda t: SDL_Delay(round(t * 1e+3))) if sys.platform == 'win32' else sleep
 
     def update_and_delay(self, dt_loop: float, t_clock: float):
@@ -249,15 +249,13 @@ class TickLimiter(MovingAverageTracker):
 
         self.update(t_clock)
 
-        wait_time = (self.update_interval - t_clock % self.update_interval) if dt_loop < self.update_interval else 0.
-
-        if wait_time:
-            self.delay(wait_time)
+        if dt_loop < self.update_interval:
+            self.delay(self.update_interval - t_clock % self.update_interval)
 
     def set_value(self):
         """Override `set_value` to reflect the temporal nature of the tracked value."""
 
-        self.value = self.tick_rate / (self.buffer[-1] - self.buffer[0])
+        self.value = self.tick_rate / (self.buffer[-1] - self.buffer[0] + self.update_interval)
 
     def set_tick_rate(self, new_tick_rate: float):
         """
@@ -266,7 +264,7 @@ class TickLimiter(MovingAverageTracker):
         """
 
         self.tick_rate = new_tick_rate
-        self.update_interval = 1. / (new_tick_rate - 1.)
+        self.update_interval = 1. / new_tick_rate
         self.set_window_length(round(new_tick_rate))
 
 
