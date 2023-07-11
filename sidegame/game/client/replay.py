@@ -14,7 +14,8 @@ import cv2
 import sdl2
 import sdl2.ext
 
-from sidegame.networking import Entry, Action, StridedFunction, ReplayClient
+from sidegame.utils import StridedFunction
+from sidegame.networking import Entry, Action, ReplayClient
 from sidegame.game.shared import GameID, Map, Session
 from sidegame.game.client.interface import SDGLiveClient
 from sidegame.game.client.simulation import Simulation

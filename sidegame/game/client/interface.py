@@ -11,7 +11,7 @@ import cv2
 import sdl2
 import sdl2.ext
 
-from sidegame.networking.core import StridedFunction
+from sidegame.utils import StridedFunction
 from sidegame.game.shared import GameID, Map, Item, Player
 from sidegame.game.client.base import SDGLiveClientBase
 from sidegame.game.client.tracking import DATA_DIR, PerfMonitor
@@ -26,7 +26,7 @@ class SDGLiveClient(SDGLiveClientBase):
     while a background thread feeds sound chunks into `pyaudio.Stream`.
     """
 
-    WINDOW_NAME = 'SiDeGame v2021-07-13'
+    WINDOW_NAME = 'SiDeGame v2023-07-16'
     RENDER_SIZE = (256, 144)
 
     # Tracked mouse/keyboard state indices
@@ -83,9 +83,8 @@ class SDGLiveClient(SDGLiveClientBase):
 
         NOTE: `pysdl2` intends for events to be obtained with `sdl2.ext.get_events()`,
         but there was an issue with events lagging in certain conditions,
-        which switching to `SDL_PollEvent` seems to fix. See:
-        https://discourse.urho3d.io/t/vsync-low-fps-input-lag-problem/733/2
-        https://github.com/marcusva/py-sdl2/blob/master/sdl2/ext/common.py#L76
+        which switching to `SDL_PollEvent` seems to fix. For comparison:
+        https://github.com/py-sdl/py-sdl2/blob/master/sdl2/ext/common.py#L125
         """
 
         sim = self.sim

@@ -7,7 +7,8 @@ from argparse import Namespace
 from abc import ABC, abstractmethod
 from typing import Dict, Iterable, List, Set, Tuple
 from time import perf_counter, sleep
-from sidegame.networking.core import get_logger
+
+from sidegame.utils import get_logger
 
 
 class Client(ABC):

@@ -12,8 +12,9 @@ from collections import deque
 from abc import ABC, abstractmethod
 from typing import Any, Callable, Deque, Dict, Iterable, List, Tuple
 from time import perf_counter
-from sidegame.networking.core import Entry, Action, EventBase, Entity, Node, TickLimiter, StridedFunction, \
-    ServerSocket, get_logger
+
+from sidegame.networking.core import Entry, Action, EventBase, Entity, Node, ServerSocket
+from sidegame.utils import TickLimiter, StridedFunction, get_logger
 
 
 class Server(ABC):

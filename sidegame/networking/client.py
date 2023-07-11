@@ -13,8 +13,9 @@ from collections import deque
 from abc import ABC, abstractmethod
 from typing import Any, Callable, Deque, Dict, Iterable, Tuple, Union
 from time import perf_counter
-from sidegame.networking.core import Entry, Action, Entity, MovingAverageTracker, TickLimiter, StridedFunction, \
-    Recorder, ClientSocket, get_logger
+
+from sidegame.networking.core import Entry, Action, Entity, Recorder, ClientSocket
+from sidegame.utils import MovingAverageTracker, TickLimiter, StridedFunction, get_logger
 
 
 class ClientBase(ABC):
