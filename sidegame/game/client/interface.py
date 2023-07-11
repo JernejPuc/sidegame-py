@@ -17,6 +17,29 @@ from sidegame.game.client.base import SDGLiveClientBase
 from sidegame.game.client.tracking import DATA_DIR, PerfMonitor
 
 
+def _create_rgb_surface(width: int, height: int) -> sdl2.surface.SDL_Surface:
+    if sdl2.endian.SDL_BYTEORDER == sdl2.endian.SDL_LIL_ENDIAN:
+        rmask = 0x0000FF
+        bmask = 0xFF0000
+
+    else:
+        rmask = 0xFF0000
+        bmask = 0x0000FF
+
+    gmask = 0x00FF00
+    amask = 0
+
+    depth = 24
+    flags = 0
+
+    surface = sdl2.surface.SDL_CreateRGBSurface(flags, width, height, depth, rmask, gmask, bmask, amask)
+
+    if not surface:
+        sdl2.err.raise_sdl_err("Failed to create an RGB surface.")
+
+    return surface.contents
+
+
 class SDGLiveClient(SDGLiveClientBase):
     """
     A client for live communication with the SDG server.
@@ -41,7 +64,7 @@ class SDGLiveClient(SDGLiveClientBase):
 
     ALPHA = 255 * np.ones((*RENDER_SIZE[::-1], 1), dtype=np.uint8)
 
-    def __init__(self, args: Namespace):
+    def __init__(self, args: Namespace, fullscreen: bool = False, borderless: bool = True, vsync: bool = True):
         sdl2.ext.init()
 
         super().__init__(args)
@@ -51,9 +74,25 @@ class SDGLiveClient(SDGLiveClientBase):
         self.space_time = 0.
 
         self.window_size = (round(self.RENDER_SIZE[0]*args.render_scale), round(self.RENDER_SIZE[1]*args.render_scale))
-        self.window = sdl2.ext.Window(self.WINDOW_NAME, size=self.window_size)
-        self.window.show()
-        self.window_array = sdl2.ext.pixels3d(sdl2.SDL_GetWindowSurface(self.window.window).contents)
+        self.window = sdl2.ext.Window(
+            self.WINDOW_NAME,
+            size=self.window_size,
+            flags=(
+                sdl2.SDL_WINDOW_OPENGL
+                | sdl2.SDL_WINDOW_SHOWN
+                | (sdl2.SDL_WINDOW_FULLSCREEN if fullscreen else (sdl2.SDL_WINDOW_BORDERLESS if borderless else 0))))
+
+        self.frame = _create_rgb_surface(*self.RENDER_SIZE)
+        self.frame_array = sdl2.ext.pixels3d(self.frame, transpose=False)
+        self.frame_texture = None
+
+        self.renderer = sdl2.ext.renderer.Renderer(
+            self.window,
+            backend='opengl',
+            logical_size=self.RENDER_SIZE,
+            flags=sdl2.SDL_RENDERER_ACCELERATED | (sdl2.SDL_RENDERER_PRESENTVSYNC if vsync else 0))
+
+        self.render = sdl2.render.SDL_RenderCopyEx if sdl2.dll.version < 2010 else sdl2.render.SDL_RenderCopyExF
 
         sdl2.SDL_SetRelativeMouseMode(sdl2.SDL_TRUE)
         self.cursor_trapped = True
@@ -297,7 +336,7 @@ class SDGLiveClient(SDGLiveClientBase):
                     file_idx = (max(file_indices)+1) if file_indices else 0
                     file_path = os.path.join(DATA_DIR, f'screenshot_{file_idx:03d}.png')
 
-                    cv2.imwrite(file_path, self.window_array.base[..., :3])
+                    cv2.imwrite(file_path, self.frame_array)
 
                     self.logger.info("Screenshot saved to: '%s'.", file_path)
 
@@ -472,13 +511,16 @@ class SDGLiveClient(SDGLiveClientBase):
         """
 
         frame = self.sim.get_frame()
-        frame = np.concatenate((frame, self.ALPHA), axis=-1)
+        np.copyto(self.frame_array, frame)
 
-        # Upscale directly to window array memory
-        cv2.resize(frame, self.window_size, dst=self.window_array.base, interpolation=cv2.INTER_NEAREST)
+        frame_texture = sdl2.render.SDL_CreateTextureFromSurface(self.renderer.sdlrenderer, self.frame)
 
-        # Redraw
-        self.window.refresh()
+        self.render(self.renderer.sdlrenderer, frame_texture, None, None, 0, None, sdl2.render.SDL_FLIP_NONE)
+        self.renderer.present()
+
+        if self.frame_texture is not None:
+            sdl2.render.SDL_DestroyTexture(self.frame_texture)
+            self.frame_texture = frame_texture
 
     def cleanup(self):
         if self.stats is not None:
@@ -493,4 +535,6 @@ class SDGLiveClient(SDGLiveClientBase):
             self.logger.info('Monitoring saved to: %s', self.monitor.path)
 
         self.sim.audio_system.stop()
+        self.renderer.destroy()
+        self.window.close()
         sdl2.SDL_Quit()
