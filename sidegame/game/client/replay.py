@@ -17,7 +17,7 @@ import sdl2.ext
 from sidegame.utils import StridedFunction
 from sidegame.networking import Entry, Action, ReplayClient
 from sidegame.game.shared import GameID, Map, Session
-from sidegame.game.client.interface import SDGLiveClient
+from sidegame.game.client.interface import SDGLiveClient, _create_rgb_surface
 from sidegame.game.client.simulation import Simulation
 from sidegame.game.client.tracking import DATA_DIR, StatTracker, FocusTracker
 
@@ -51,7 +51,14 @@ class SDGReplayClient(ReplayClient):
 
     SPEEDUPS = [0.25, 0.5, 0.75, 1., 1.25, 1.5, 1.75, 2., 4., 8.]
 
-    def __init__(self, args: Namespace, headless: bool = False):
+    def __init__(
+        self,
+        args: Namespace,
+        headless: bool = False,
+        fullscreen: bool = False,
+        borderless: bool = True,
+        vsync: bool = True
+    ):
         self.rng = np.random.default_rng(args.seed)
         random.seed(args.seed)
 
@@ -104,9 +111,28 @@ class SDGReplayClient(ReplayClient):
             sdl2.ext.init()
             self.sim.audio_system.start()
 
-            self.window = sdl2.ext.Window(SDGLiveClient.WINDOW_NAME, size=self.window_size)
-            self.window.show()
-            self.window_array = sdl2.ext.pixels3d(sdl2.SDL_GetWindowSurface(self.window.window).contents)
+            self.window = sdl2.ext.Window(
+                SDGLiveClient.WINDOW_NAME,
+                size=self.window_size,
+                flags=(
+                    sdl2.SDL_WINDOW_OPENGL
+                    | sdl2.SDL_WINDOW_SHOWN
+                    | (
+                        sdl2.SDL_WINDOW_FULLSCREEN
+                        if fullscreen
+                        else (sdl2.SDL_WINDOW_BORDERLESS if borderless else 0))))
+
+            self.frame = _create_rgb_surface(*SDGLiveClient.RENDER_SIZE)
+            self.frame_array = sdl2.ext.pixels3d(self.frame, transpose=False)
+            self.frame_texture = None
+
+            self.renderer = sdl2.ext.renderer.Renderer(
+                self.window,
+                backend='opengl',
+                logical_size=SDGLiveClient.RENDER_SIZE,
+                flags=sdl2.SDL_RENDERER_ACCELERATED | (sdl2.SDL_RENDERER_PRESENTVSYNC if vsync else 0))
+
+            self.render = sdl2.render.SDL_RenderCopyEx if sdl2.dll.version < 2010 else sdl2.render.SDL_RenderCopyExF
 
             self.mouse_sensitivity = args.mouse_sensitivity / args.render_scale
 
@@ -162,9 +188,16 @@ class SDGReplayClient(ReplayClient):
             width = round(self._tick_counter / self.max_tick_counter * 256)
             frame[-1, :width, 1] = 127
 
-            frame = np.concatenate((frame, SDGLiveClient.ALPHA), axis=-1)
-            cv2.resize(frame, self.window_size, dst=self.window_array.base, interpolation=cv2.INTER_NEAREST)
-            self.window.refresh()
+            np.copyto(self.frame_array, frame)
+
+            frame_texture = sdl2.render.SDL_CreateTextureFromSurface(self.renderer.sdlrenderer, self.frame)
+
+            self.render(self.renderer.sdlrenderer, frame_texture, None, None, 0, None, sdl2.render.SDL_FLIP_NONE)
+            self.renderer.present()
+
+            if self.frame_texture is not None:
+                sdl2.render.SDL_DestroyTexture(self.frame_texture)
+                self.frame_texture = frame_texture
 
     def generate_output(self, dt: float):
         self.sim.eval_effects(dt * self.time_scale)
@@ -354,7 +387,7 @@ class SDGReplayClient(ReplayClient):
                     file_idx = (max(file_indices)+1) if file_indices else 0
                     file_path = os.path.join(DATA_DIR, f'screenshot_{file_idx:03d}.png')
 
-                    cv2.imwrite(file_path, self.window_array.base[..., :3])
+                    cv2.imwrite(file_path, self.frame_array)
 
                     self.logger.info("Screenshot saved to: '%s'.", file_path)
 
@@ -453,6 +486,8 @@ class SDGReplayClient(ReplayClient):
             return
 
         self.sim.audio_system.stop()
+        self.renderer.destroy()
+        self.window.close()
         sdl2.SDL_Quit()
 
     def manual_step(self, previous_clock: Union[float, None], generate_obs: bool = True) -> Union[float, None]:

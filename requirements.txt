@@ -1,5 +1,6 @@
 numpy
 scipy
+numba
 opencv-contrib-python-headless
 pysdl2-dll
 pysdl2
