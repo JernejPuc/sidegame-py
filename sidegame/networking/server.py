@@ -143,7 +143,7 @@ class Server(ABC):
 
                 # Add interpolation window to client node and offset its latency tracker
                 client_interp_ratio = self.unpack_connection_request(client.incoming_buffer[0], client.id)
-                client.interp_window = client_interp_ratio / (self._update_rate - 1.)
+                client.interp_window = client_interp_ratio / self._update_rate
                 client.tracker.offset = -self._tick_interval / 2.
 
                 initial_data = self.get_connection_reply(client.id, self._update_rate, current_clock)

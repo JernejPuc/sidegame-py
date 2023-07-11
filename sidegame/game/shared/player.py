@@ -32,7 +32,7 @@ class Player(Entity, PlayerEntity):
     AIM_PUNCH_DAMAGE_REFERENCE = 36.
 
     LOG10E = np.log10(np.e)
-    DT64 = 1. / (64. - 1.)  # Tick-independent formula factor, standardised to 64 ticks
+    DT64 = 1. / 64.  # Tick-independent formula factor, standardised to 64 ticks
 
     OBJECT_DROP_VELOCITY = 28.43
     GRENADE_THROW_VELOCITY = OBJECT_DROP_VELOCITY * 2.

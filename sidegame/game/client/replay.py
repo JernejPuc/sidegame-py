@@ -183,7 +183,7 @@ class SDGReplayClient(ReplayClient):
         update_rate = rep_data[5]
         init_clock_diff = rep_data[6]
 
-        return client_id, interp_ratio / (update_rate - 1.), init_clock_diff
+        return client_id, interp_ratio / update_rate, init_clock_diff
 
     @staticmethod
     def unpack_single(data: bytes) -> Tuple[Entry, int]:

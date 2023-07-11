@@ -335,7 +335,7 @@ class LiveClient(ClientBase):
 
         client_id, update_rate, server_clock = self.unpack_connection_reply(reply)
 
-        interp_window = interp_ratio / (update_rate - 1.)
+        interp_window = interp_ratio / update_rate
         init_clock_diff = server_clock - self._clock()
 
         super().__init__(client_id, tick_rate, interp_window, init_clock_diff)
