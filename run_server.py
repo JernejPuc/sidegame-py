@@ -25,7 +25,7 @@ def parse_args() -> argparse.Namespace:
     """
 
     config_parser = argparse.ArgumentParser(description='Config file parser.', add_help=False)
-    parser = argparse.ArgumentParser(description='Argument parser for the SDG live client.')
+    parser = argparse.ArgumentParser(description='Argument parser for the SDG live server.')
 
     config_parser.add_argument(
         '--config_file', type=str, default=os.path.join(DATA_DIR, 'config.json'),
@@ -34,7 +34,7 @@ def parse_args() -> argparse.Namespace:
         '-c', '--config', type=str, default='ServerDefault',
         help='A specific config among presets in the configuration file.')
 
-    parser.add_argument('-m', '--mode', type=str, default='client', help='Switch between scripts to run.')
+    parser.add_argument('-m', '--mode', type=str, default='server', help='Switch between scripts to run.')
 
     parser.add_argument(
         '--time_scale', type=float, default=1., help='Simulation time factor affecting movement and decay formulae.')

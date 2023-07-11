@@ -65,31 +65,9 @@ sudo apt install portaudio19-dev
 
 Should `pyaudio` fail to install on Windows, you could try installing it from a
 [wheel](https://www.lfd.uci.edu/~gohlke/pythonlibs/#pyaudio).
-If suggested by the error message, you might also need to install the
-[Visual C++ build tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
-or [Visual C++ redistributables](https://support.microsoft.com/en-us/topic/the-latest-supported-visual-c-downloads-2647da03-1eea-4433-9aff-95f26a218cc0).
 
 See the project descriptions of [pysdl2](https://pypi.org/project/PySDL2/)
 and [pyaudio](https://people.csail.mit.edu/hubert/pyaudio/) for more details.
-
-
-### `sdglib`
-
-Note that `sidegame` relies on a small extension of its own.
-In `sidegame/ext`, you can find multiple binary files:
-- `sdglib37.pyd` (Windows)
-- `sdglib39.pyd` (Windows)
-- `sdglib37.so` (Linux)
-
-These pre-built binaries are reflective of the platforms and versions of `python`
-on which `sidegame` was developed and tested. If you are using a different
-combination, source files `lib.rs` and `Cargo.toml` are also provided to allow
-you to compile `sdglib` yourself by following the instructions for
-[building Rust packages](https://doc.rust-lang.org/cargo/commands/cargo-build.html)
-and [building with PyO3](https://pyo3.rs/v0.13.2/building_and_distribution.html).
-
-Determine or build the appropriate binary file and rename it to
-`sdglib.pyd` (Windows) or `sdglib.so` (Linux).
 
 
 ### Editable install
@@ -193,21 +171,18 @@ although highly overfitted and not very useful in practice.
 
 At its base resolution (`256x144`), `sidegame` should be able to be rendered
 at hundreds of FPS (on average - drops can still occur), which should
-make it light enough to not be a bottleneck in distributed AI training processes
-(network and device synchronisation should probably play a larger role).
+make it light enough for AI training setups. In distributed setups,
+note that network and device synchronisation also play a role.
 
-For human interfaces, it is expected to be upscaled to higher resolutions, where
-FPS is effectively limited by the argument `render_scale`. For example, scale
-`4` corresponds to a resolution of `1024x576`, which should run with steady
-120FPS, and scale `5` (`1280x720`) with upwards of 60FPS, while scale `6.25`
-(`1600x900`) may already drop to 50FPS and below (with target tick rate of `60`).
+For human interfaces, it is expected to be upscaled to higher resolutions,
+using the argument `render_scale`. Here are a few scale-to-resolution correspondences:
+- `4` -- `1024x576`
+- `5` -- `1280x720`
+- `6.25` -- `1600x900`
+- `7.5` -- `1920x1080`
+- `10` -- `2560x1440`
 
-This is caused by increased demand on the CPU to copy the original (`256x144`)
-rendered frame into the pixels of a larger window to be displayed. Therefore,
-these performance numbers will vary and depend on the capabilities (and active
-load) of your CPU.
-
-Additionally, going above 144FPS is not recommended, because it seems that
+Presently, going above 144FPS is not recommended, because it seems that
 resources start to be taken away from the audio streaming thread in the background
 (subject to Python's [GIL](https://docs.python.org/3/library/threading.html))
 and sounds may become choppy. This does not have to be an issue in AI actors,
@@ -280,16 +255,14 @@ another paper will be forthcoming.
 ## Going forward
 
 Despite a year of inactivity, the prospect of revisiting SiDeGame remains.
-The following open issues will be addressed in 2023:
+The following open issues are being addressed in 2023:
 
 
 #### Gameplay
+- Make matches shorter, with fewer rounds (e.g. BO15 instead of BO30, no draws).
 - Add option to create detached client nodes to spawn dummy entities.
 - Add more maps by modifying the original map for different team sizes:
   1v0 (aim practice), 1v1, 2v2, 3v3, 4v4, 5v5 (existing/original).
-
-#### Accessibility
-- Use numba JIT compilation to avoid the need for precompiled custom rust extensions.
 
 #### Optimisation
 - Use numba to optimise physics, logic, and drawing wherever possible and beneficial.
@@ -298,8 +271,6 @@ The following open issues will be addressed in 2023:
 - Perform a distance check and line-of-sight masking before drawing visual effects.
 
 #### User interface
-- GPU accelerate base frame upscaling and window rendering by converting frame arrays
-  to texture objects for SDL2's renderer.
 - Use asyncIO to prevent window rendering from blocking the client loop.
 - Use asyncIO to avoid the need for a separate thread to write to the audio stream.
 - Allow the client loop to run regardless of server connection,
@@ -327,7 +298,8 @@ The following open issues will be addressed in 2023:
 #### AI agents
 - Remove current imitation learning implementation and model.
 - Revise the policy and valuator model architectures.
-- Revise the RL implementation for the lockstep setting and update the algorithm to PPG.
+- Revise the RL implementation for the lockstep setting and update the algorithm to PPG
+([`discit`](https://github.com/jernejpuc/discit)).
 - Pretrain the visual encoder part of the model on frame-segmentation pairs.
 - Add trained policy models for each stage of a curriculum of transferring agents
   from smaller to larger maps and team sizes.
