@@ -42,12 +42,14 @@ class Server(ABC):
         logging_name: str = None,
         logging_path: str = None,
         logging_level: int = logging.DEBUG,
-        show_ticks: bool = True
+        show_ticks: bool = True,
+        ip_config: dict[str, list[str]] = None
     ):
         self.entities: Dict[int, Entity] = {}
 
         self._socket = ServerSocket(socket_address, client_message_size, server_message_size, round(tick_rate))
         self._clients: Dict[Tuple[str, int], Node] = self._socket.nodes
+        self._blocked_ips = None if ip_config is None or 'Ignored' not in ip_config else ip_config['Ignored']
 
         self._clock: Callable = perf_counter
 
@@ -134,7 +136,7 @@ class Server(ABC):
         """
 
         # Check for client data
-        new_clients = self._socket.recv(current_clock)
+        new_clients = self._socket.recv(current_clock, self._blocked_ips)
 
         # Add new clients
         if new_clients:

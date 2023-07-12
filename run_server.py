@@ -45,6 +45,9 @@ def parse_args() -> argparse.Namespace:
         '--update_rate', type=float, default=32.,
         help='Rate of sending messages to clients in packets per second.')
 
+    parser.add_argument(
+        '--ipconfig_file', type=str, default=os.path.join(DATA_DIR, 'config_ip.json'),
+        help='Path to the IP configuration file.')
     parser.add_argument('--address', type=str, default='', help='Server address.')
     parser.add_argument(
         '--main_port', '--port', type=int, default=49152, help='Main port for the matchmaking or session server.')
@@ -98,7 +101,14 @@ if __name__ == '__main__':
     if args.mode == 'server':
         args.port = args.main_port
 
-        server = SDGServer(args)
+        if args.ipconfig_file:
+            with open(args.ipconfig_file, 'r') as json_file:
+                ip_config = json.load(json_file)
+
+        else:
+            ip_config = None
+
+        server = SDGServer(args, ip_config=ip_config)
 
     elif args.mode == 'matchmaking':
         address = (args.address, args.main_port)

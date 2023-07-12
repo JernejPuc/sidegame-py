@@ -282,13 +282,8 @@ The following open issues are being addressed in 2023:
 - Implement a fused AI client-server that can run several match sessions
   in lockstep (synchronous) mode.
 
-#### Security
-- Add options for the server to update and search through a list of allowed and blocked IPs.
-
 #### Matchmaking
 - Add options for the client to update and search through a list of known server IPs.
-- Add "kick player" admin command to disconnect them, clear their node,
-  and place their address on a temporary blacklist.
 
 #### Data extraction
 - Add option to produce segmentation maps for every frame.

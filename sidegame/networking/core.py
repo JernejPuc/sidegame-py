@@ -446,7 +446,7 @@ class ServerSocket:
 
         return self._disconnected_nodes
 
-    def recv(self, timestamp: float = 0.) -> List[Node]:
+    def recv(self, timestamp: float = 0., blocklist: list[str] = None) -> List[Node]:
         """
         Check if data is available for reading, determine its source node,
         and receive it into its buffer. A successful receive also updates
@@ -467,6 +467,9 @@ class ServerSocket:
 
                 # See note in docstring
                 except ConnectionResetError:
+                    continue
+
+                if blocklist is not None and address[0] in blocklist:
                     continue
 
                 # Drop incomplete data packets

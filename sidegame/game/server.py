@@ -17,7 +17,7 @@ class SDGServer(Server):
     MAX_TIME_TO_ASSEMBLE = 20.
     ENV_ID = Map.PLAYER_ID_NULL
 
-    def __init__(self, args: Namespace, assigned_teams: Dict[str, int] = None):
+    def __init__(self, args: Namespace, assigned_teams: Dict[str, int] = None, ip_config: dict[str, list[str]] = None):
         self.rng = default_rng(args.seed)
         self.time_scale = args.time_scale
 
@@ -30,7 +30,8 @@ class SDGServer(Server):
             logging_name='Session' if args.session_id is None else args.session_id,
             logging_path=args.logging_path,
             logging_level=args.logging_level,
-            show_ticks=args.show_ticks)
+            show_ticks=args.show_ticks,
+            ip_config=ip_config)
 
         self.roles = {
             int(args.admin_key, 16): GameID.ROLE_ADMIN,
@@ -506,13 +507,17 @@ class SDGServer(Server):
             if kicked_id in self.entities:
                 del self.entities[kicked_id]
 
+                if self._blocked_ips is None:
+                    self._blocked_ips = []
+
+                for client_key, client in tuple(self._clients.items()):
+                    if client.id == kicked_id:
+                        self._blocked_ips.append(client.address[0])
+                        del self._clients[client_key]
+                        break
+
             else:
                 self.bot_counter -= 1
-
-            for client_key, client in tuple(self._clients.items()):
-                if client.id == kicked_id:
-                    del self._clients[client_key]
-                    break
 
             return Event(Event.CTRL_PLAYER_DISCONNECTED, kicked_id)
 
