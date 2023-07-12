@@ -260,7 +260,6 @@ The following open issues are being addressed in 2023:
 
 #### Gameplay
 - Make matches shorter, with fewer rounds (e.g. BO15 instead of BO30, no draws).
-- Add option to create detached client nodes to spawn dummy entities.
 - Add more maps by modifying the original map for different team sizes:
   1v0 (aim practice), 1v1, 2v2, 3v3, 4v4, 5v5 (existing/original).
 

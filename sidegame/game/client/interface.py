@@ -191,6 +191,12 @@ class SDGLiveClient(SDGLiveClientBase):
 
                             print(print_string)
 
+                        elif sim.console_text.startswith('kick name'):
+                            name = [
+                                min(ord(m), 255)
+                                for m in sim.console_text[10:14] + ' '*(4-len(sim.console_text[10:14]))]
+                            log = [sim.own_player_id, GameID.CMD_KICK_NAME, *name, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.]
+
                         elif sim.console_text.startswith('set name'):
                             name = [
                                 min(ord(m), 255) for m in sim.console_text[9:13] + ' '*(4-len(sim.console_text[9:13]))]

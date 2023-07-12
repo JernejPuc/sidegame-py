@@ -57,7 +57,9 @@ class Simulation:
         'ping': GameID.CMD_GET_LATENCY,
         'rundown': GameID.CHEAT_END_ROUND,
         'dev mode': GameID.CHEAT_DEV_MODE,
-        'max money': GameID.CHEAT_MAX_MONEY}
+        'max money': GameID.CHEAT_MAX_MONEY,
+        'add bot': GameID.CMD_ADD_BOT,
+        'kick name': GameID.CMD_KICK_NAME}
 
     DEFAULT_OBS = (np.Inf, Map.PLAYER_ID_NULL, GameID.NULL)
 

@@ -45,6 +45,8 @@ class SDGServer(Server):
         self.inventory = Inventory()
         self.gathered_data_cache: Deque[Entry] = deque()
 
+        self.bot_counter = 0
+
     def unpack_connection_request(self, data: bytes, client_id: int) -> float:
         request = self.unpack_single(data)[0].data
 
@@ -459,6 +461,61 @@ class SDGServer(Server):
             player.money = Player.MONEY_CAP
             return Event(Event.CTRL_PLAYER_CHANGED, (player_id, player.name, player.money, player.dev_mode))
 
+        elif log_id == GameID.CMD_ADD_BOT:
+            if self.bot_counter == 256:
+                return None
+
+            bot_counter = self.bot_counter
+            self.bot_counter += 1
+
+            client_id = self._socket._node_counter
+            self._socket._node_counter += 1
+
+            bot: Player = self.create_entity(client_id)
+            bot.name = f'{"bot"[:4-len(str(bot_counter))]}{bot_counter}'
+            bot.role = GameID.ROLE_PLAYER
+            bot.dev_mode = bool(log_data[2])
+
+            self.session.add_player(bot)
+
+            self.logger.info('Client %d connected (bot %d).', client_id, bot_counter)
+
+            return Event(Event.CTRL_PLAYER_CONNECTED, (
+                self.session.time, self.session.total_round_time, self.session.total_match_time, bot.id, bot.name))
+
+        elif log_id == GameID.CMD_KICK_NAME:
+            kicked_name = ''.join(chr(ordinal) for ordinal in log_data[2:6])
+            kicked_id = None
+            kicked_player = None
+
+            for player_id, player in self.session.players.items():
+                if player.name == kicked_name:
+                    kicked_id = player.id
+                    kicked_player = player
+                    break
+
+            if kicked_id is None:
+                return None
+
+            else:
+                self.session.remove_player(kicked_player)
+
+                if self.session.map is not None:
+                    self.session.map.player_id[kicked_player.get_covered_indices()] = Map.PLAYER_ID_NULL
+
+            if kicked_id in self.entities:
+                del self.entities[kicked_id]
+
+            else:
+                self.bot_counter -= 1
+
+            for client_key, client in tuple(self._clients.items()):
+                if client.id == kicked_id:
+                    del self._clients[client_key]
+                    break
+
+            return Event(Event.CTRL_PLAYER_DISCONNECTED, kicked_id)
+
         return None
 
     def create_global_log(self, event: Event) -> Tuple[int, Any]:
@@ -496,6 +553,11 @@ class SDGServer(Server):
                 phase_time, round_time, match_time, float(player_id),
                 float(ord(name[0])), float(ord(name[1])), float(ord(name[2])), float(ord(name[3])),
                 0., 0., 0., 0., 0, 0, event_type]
+
+        elif event_type == Event.CTRL_PLAYER_DISCONNECTED:
+            entity_id = event.data
+
+            data = [float(entity_id), 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0, 0, event_type]
 
         elif event_type == Event.CTRL_PLAYER_MOVED:
             player_id, team, position_id = event.data
