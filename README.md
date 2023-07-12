@@ -254,48 +254,76 @@ another paper will be forthcoming.
 
 ## Going forward
 
-Despite a year of inactivity, the prospect of revisiting SiDeGame remains.
+Despite some time of inactivity, the prospect of revisiting SiDeGame remains.
 The following open issues are being addressed in 2023:
 
+
+### `sidegame`
 
 #### Gameplay
 - Add more maps by modifying the original map for different team sizes:
   1v0 (aim practice), 1v1, 2v2, 3v3, 4v4, 5v5 (existing/original).
+- Experiment with partial border or background colouring of the side panel
+  based on type, sender or time to make messages stand out and aid panel navigation.
+- Experiment with message wheel views to improve selection accuracy and speed.
 
 #### Optimisation
 - Use numba to optimise physics, logic, and drawing wherever possible and beneficial.
-- Use asyncIO to prevent client-server communication from blocking the client loop.
-- Define a custom warping method to fix the graphical artifacts of visual effects.
-- Perform a distance check and line-of-sight masking before drawing visual effects.
+- Revise methods for warping and drawing visual effects to fix graphical artifacts,
+  follow line-of-sight, and improve overall performance.
+- Tweak the audio channel system to better handle many overlapping sounds.
 
-#### User interface
-- Use asyncIO to prevent window rendering from blocking the client loop.
-- Use asyncIO to avoid the need for a separate thread to write to the audio stream.
-- Allow the client loop to run regardless of server connection,
-  rendering the console/lobby view.
+
+### `sdgai`
+
+#### Supervised pretraining
+- Remove current imitation learning implementation and model.
+- Add option to extract segmentation maps from every frame.
+- Revise the visual encoder part of the model.
+- Pretrain the visual encoder part of the model on frame-segmentation pairs.
+
+#### Environment
+- Implement a fused AI client-server that can run several match sessions
+  in lockstep (synchronous) mode.
+- Implement an AI client that can run inference for multiple agents at once
+  from a single process on the same device.
+
+#### Reinforcement learning
+- Revise the policy and valuator model architectures.
+- Revise the RL implementation for the lockstep setting and update the algorithm to PPG
+([`discit`](https://github.com/jernejpuc/discit)).
+- Add trained policy models for each stage of a curriculum of transferring agents
+  from smaller to larger maps and team sizes.
+
+#### Presentation
+- Record demos of human and AI play and embed uploaded videos in the main `README`.
+
+
+## Backlog
+
+Other points to be addressed, with lower priority:
+
+
+### `sidegame`
+
+#### Gameplay
+- Add a command to fill all empty player positions with AI agents or dummies.
+- Enable players to take over in place of a dummy entity.
 
 #### Networking
 - Add an event to signal the server to handle intended disconnections
   immediately instead of eventually catching a timeout or related errors.
 - Keep the state of unexpectedly disconnected clients and allow them to resume from it
   if they manage to reconnect.
-- Implement a fused AI client-server that can run several match sessions
-  in lockstep (synchronous) mode.
 
-#### Matchmaking
+#### User interface
+- Allow the client loop to run regardless of server connection,
+  rendering the console/lobby view.
 - Add options for the client to update and search through a list of known server IPs.
 
-#### Data extraction
-- Add option to produce segmentation maps for every frame.
+#### Replays
+- Use state checkpoints to speed up jumps between time points.
+- Include effects in state checkpoints for accurate replay when jumping.
 
-#### AI agents
-- Remove current imitation learning implementation and model.
-- Revise the policy and valuator model architectures.
-- Revise the RL implementation for the lockstep setting and update the algorithm to PPG
-([`discit`](https://github.com/jernejpuc/discit)).
-- Pretrain the visual encoder part of the model on frame-segmentation pairs.
-- Add trained policy models for each stage of a curriculum of transferring agents
-  from smaller to larger maps and team sizes.
-
-#### Presentation
-- Record demos of human and AI play and embed uploaded videos on the front page.
+#### Distribution
+- Proper PyPI distribution and documentation.
