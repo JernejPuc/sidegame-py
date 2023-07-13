@@ -74,13 +74,17 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument(
         '-x', '--render_scale', type=float, default=5,
-        help='Factor by which the base render is upscaled. Determines the width and height of the window.')
+        help='Factor by which the base render is upscaled. Determines the width and height of the window. '
+        'Setting it to 0 will make the display mode fullscreen and infer the scale factor.')
     parser.add_argument(
         '-s', '--mouse_sensitivity', type=float, default=1.,
         help='Factor by which mouse movement, i.e. pixel distance traversed between updates, is multiplied.')
     parser.add_argument(
         '--volume', type=float, default=1.,
         help='Initial factor by which in-game sound amplitudes are scaled.')
+    parser.add_argument(
+        '--audio_device', type=int, default=0,
+        help='Index of output audio device. Default (0) may not correspond to assumed priority.')
     parser.add_argument(
         '--interp_ratio', type=float, default=2.,
         help='Ratio between kept states for entity interpolation and the update rate of the server. '

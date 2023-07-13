@@ -63,13 +63,21 @@ class Simulation:
 
     DEFAULT_OBS = (np.Inf, Map.PLAYER_ID_NULL, GameID.NULL)
 
-    def __init__(self, tick_rate: float, volume: float, own_player_id: int, rng: np.random.Generator = None):
+    def __init__(
+        self,
+        own_player_id: int,
+        tick_rate: float,
+        volume: float,
+        audio_device: int = 0,
+        rng: np.random.Generator = None
+    ):
         self.audio_system = AudioSystem(
             step_freq=tick_rate,
             max_distance=self.AUDIO_MAX_DISTANCE,
             distance_scaling=self.AUDIO_DISTANCE_SCALING,
             base_volume=self.AUDIO_BASE_VOLUME,
-            init_volume=volume)
+            init_volume=volume,
+            out_device_idx=audio_device)
 
         self.effects: Dict[int, Effect] = {}
         self.inventory = Inventory(self.load_image, self.load_sound)

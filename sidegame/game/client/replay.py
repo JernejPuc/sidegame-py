@@ -17,7 +17,7 @@ import sdl2.ext
 from sidegame.utils import StridedFunction
 from sidegame.networking import Entry, Action, ReplayClient
 from sidegame.game.shared import GameID, Map, Session
-from sidegame.game.client.interface import SDGLiveClient, _create_rgb_surface
+from sidegame.game.client.interface import SDGLiveClient, _create_rgb_surface, _get_fullscreen_mode
 from sidegame.game.client.simulation import Simulation
 from sidegame.game.client.tracking import DATA_DIR, StatTracker, FocusTracker
 
@@ -55,7 +55,6 @@ class SDGReplayClient(ReplayClient):
         self,
         args: Namespace,
         headless: bool = False,
-        fullscreen: bool = False,
         borderless: bool = True,
         vsync: bool = True
     ):
@@ -81,7 +80,7 @@ class SDGReplayClient(ReplayClient):
         self.paused = False
         self.max_tick_counter = self.recorder.split_meta(self.recorder.buffer[-1])[0][1]
 
-        self.sim = Simulation(args.tick_rate, args.volume, self.own_entity_id, rng=self.rng)
+        self.sim = Simulation(self.own_entity_id, args.tick_rate, args.volume, args.audio_device, rng=self.rng)
         self.session: Session = self.sim.session
         self.stats = StatTracker(self.session, self.own_entity)
         self.focus = FocusTracker(
@@ -97,9 +96,16 @@ class SDGReplayClient(ReplayClient):
         self.action_stream: Deque[Tuple[int, float]] = deque()
         self.io_lock: Lock = self.sim.audio_system.external_buffer_io_lock
 
-        self.window_size = (
-                round(SDGLiveClient.RENDER_SIZE[0]*args.render_scale),
-                round(SDGLiveClient.RENDER_SIZE[1]*args.render_scale))
+        if not args.render_scale:
+            fullscreen = True
+            *self.window_size, _ = _get_fullscreen_mode()
+            args.render_scale = self.window_size[0] / SDGLiveClient.RENDER_SIZE[0]
+
+        else:
+            fullscreen = False
+            self.window_size = (
+                    round(SDGLiveClient.RENDER_SIZE[0]*args.render_scale),
+                    round(SDGLiveClient.RENDER_SIZE[1]*args.render_scale))
 
         if headless:
             self.window = None
@@ -118,7 +124,7 @@ class SDGReplayClient(ReplayClient):
                     sdl2.SDL_WINDOW_OPENGL
                     | sdl2.SDL_WINDOW_SHOWN
                     | (
-                        sdl2.SDL_WINDOW_FULLSCREEN
+                        sdl2.SDL_WINDOW_FULLSCREEN_DESKTOP
                         if fullscreen
                         else (sdl2.SDL_WINDOW_BORDERLESS if borderless else 0))))
 
@@ -318,7 +324,10 @@ class SDGReplayClient(ReplayClient):
         random.seed(self.init_args.seed)
 
         self.sim = Simulation(
-            self.init_args.tick_rate, self.init_args.volume, self.own_entity_id, rng=self.rng)
+            self.own_entity_id,
+            self.init_args.tick_rate, self.init_args.volume, self.init_args.audio_device,
+            rng=self.rng)
+
         self.session = self.sim.session
         self.stats = StatTracker(self.session, self.own_entity)
 

@@ -46,7 +46,7 @@ class SDGLiveClientBase(LiveClient):
             interp_ratio=args.interp_ratio
         )
 
-        self.sim = Simulation(args.tick_rate, args.volume, self.own_entity_id, rng=self.rng)
+        self.sim = Simulation(self.own_entity_id, args.tick_rate, args.volume, args.audio_device, rng=self.rng)
         self.session: Session = self.sim.session
         self.stats = StatTracker(self.session, self.own_entity) if args.track_stats else None
         random.seed(args.seed)

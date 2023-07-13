@@ -18,7 +18,7 @@ from sidegame.game.client.tracking import DATA_DIR, PerfMonitor
 
 
 def _create_rgb_surface(width: int, height: int) -> sdl2.surface.SDL_Surface:
-    if sdl2.endian.SDL_BYTEORDER == sdl2.endian.SDL_LIL_ENDIAN:
+    if sdl2.endian.SDL_BYTEORDER != sdl2.endian.SDL_LIL_ENDIAN:
         rmask = 0x0000FF
         bmask = 0xFF0000
 
@@ -38,6 +38,16 @@ def _create_rgb_surface(width: int, height: int) -> sdl2.surface.SDL_Surface:
         sdl2.err.raise_sdl_err("Failed to create an RGB surface.")
 
     return surface.contents
+
+
+def _get_fullscreen_mode(display_idx: int = 0) -> tuple[int, int, int]:
+    mode = sdl2.video.SDL_DisplayMode()
+    res = sdl2.video.SDL_GetDesktopDisplayMode(0, ctypes.byref(mode))
+
+    if res:
+        sdl2.err.raise_sdl_err("Failed to get fullscreen display mode.")
+
+    return mode.w, mode.h, mode.refresh_rate
 
 
 class SDGLiveClient(SDGLiveClientBase):
@@ -64,7 +74,7 @@ class SDGLiveClient(SDGLiveClientBase):
 
     ALPHA = 255 * np.ones((*RENDER_SIZE[::-1], 1), dtype=np.uint8)
 
-    def __init__(self, args: Namespace, fullscreen: bool = False, borderless: bool = True, vsync: bool = True):
+    def __init__(self, args: Namespace, borderless: bool = True, vsync: bool = True):
         sdl2.ext.init()
 
         super().__init__(args)
@@ -73,14 +83,26 @@ class SDGLiveClient(SDGLiveClientBase):
         self.mkbd_state = [0]*8
         self.space_time = 0.
 
-        self.window_size = (round(self.RENDER_SIZE[0]*args.render_scale), round(self.RENDER_SIZE[1]*args.render_scale))
+        if not args.render_scale:
+            fullscreen = True
+            *self.window_size, _ = _get_fullscreen_mode()
+            args.render_scale = self.window_size[0] / self.RENDER_SIZE[0]
+
+        else:
+            fullscreen = False
+            self.window_size = (
+                round(self.RENDER_SIZE[0]*args.render_scale), round(self.RENDER_SIZE[1]*args.render_scale))
+
         self.window = sdl2.ext.Window(
             self.WINDOW_NAME,
             size=self.window_size,
             flags=(
                 sdl2.SDL_WINDOW_OPENGL
                 | sdl2.SDL_WINDOW_SHOWN
-                | (sdl2.SDL_WINDOW_FULLSCREEN if fullscreen else (sdl2.SDL_WINDOW_BORDERLESS if borderless else 0))))
+                | (
+                    sdl2.SDL_WINDOW_FULLSCREEN_DESKTOP
+                    if fullscreen
+                    else (sdl2.SDL_WINDOW_BORDERLESS if borderless else 0))))
 
         self.frame = _create_rgb_surface(*self.RENDER_SIZE)
         self.frame_array = sdl2.ext.pixels3d(self.frame, transpose=False)

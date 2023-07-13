@@ -1,6 +1,7 @@
 """Planar audio system and supporting objects."""
 
 import os
+import sys
 import wave
 import threading
 from typing import Deque, Dict, List, Optional, Tuple, Union
@@ -119,6 +120,28 @@ def get_hrir_filters() -> Dict[int, np.ndarray]:
     return hrir_filters
 
 
+def load_audio():
+    """
+    See: https://stackoverflow.com/questions/7088672/pyaudio-working-but-spits-out-error-messages-each-time/17673011
+    """
+
+    if sys.platform == 'win32':
+        return pyaudio.PyAudio()
+
+    from ctypes import cdll, CFUNCTYPE, c_char_p, c_int
+
+    c_error_handler = CFUNCTYPE(None, c_char_p, c_int, c_char_p, c_int, c_char_p)(lambda *_: None)
+
+    asound = cdll.LoadLibrary('libasound.so')
+    asound.snd_lib_error_set_handler(c_error_handler)
+
+    audio = pyaudio.PyAudio()
+
+    asound.snd_lib_error_set_handler(None)
+
+    return audio
+
+
 class PlanarAudioSystem:
     """
     An audio system using HRIR, low-pass, and scaling filters to simulate
@@ -153,11 +176,13 @@ class PlanarAudioSystem:
         distance_scaling: float = 1.,
         base_volume: float = 0.25,
         init_volume: float = 1.,
-        max_n_sounds: int = 32
+        max_n_sounds: int = 32,
+        out_device_idx: int = 0
     ):
         self._audio: pyaudio.PyAudio = None
         self._stream: pyaudio.Stream = None
         self._player: threading.Thread = None
+        self._out_device_idx = out_device_idx
         self.streaming = False
         self.paused = False
 
@@ -186,12 +211,13 @@ class PlanarAudioSystem:
 
             return
 
-        self._audio = pyaudio.PyAudio()
+        self._audio = load_audio()
         self._stream = self._audio.open(
             rate=self.SAMPLING_RATE,
             channels=self._N_CHANNELS,
             format=self._audio.get_format_from_width(self._SAMPLE_WIDTH),
-            output=True)
+            output=True,
+            output_device_index=self._out_device_idx)
 
         self._player = threading.Thread(target=self._play, daemon=True)
         self._player.start()

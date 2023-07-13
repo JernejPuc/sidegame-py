@@ -414,7 +414,7 @@ class Incendiary(Object):
         cover = np.linalg.norm(indices, axis=0) < self.item.radius
 
         # Get flammable ground mask
-        cover &= ~wall_chunk.astype(np.bool)
+        cover &= ~wall_chunk.astype(bool)
 
         # Get smoke mask
         zone_chunk = zone_map[slice_y, slice_x]
@@ -563,7 +563,7 @@ class Smoke(Object):
         cover = np.linalg.norm(indices, axis=0) < self.item.radius
 
         # Get ground mask
-        cover &= ~wall_chunk.astype(np.bool)
+        cover &= ~wall_chunk.astype(bool)
 
         # Get global indices
         indices_y, indices_x = np.where(cover)

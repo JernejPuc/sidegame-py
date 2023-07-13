@@ -5,6 +5,13 @@ from numba import jit
 from sidegame.game.shared.core import Map
 
 
+# Redeclare as direct literals for numba
+MAP_HEIGHT_TRANSITION = Map.HEIGHT_TRANSITION
+MAP_HEIGHT_ELEVATED = Map.HEIGHT_ELEVATED
+MAP_ZONE_SMOKE = Map.ZONE_SMOKE
+MAP_OBJECT_ID_NULL = Map.OBJECT_ID_NULL
+MAP_PLAYER_ID_NULL = Map.PLAYER_ID_NULL
+
 MASK_TERRAIN_WALL = 1
 VIS_LEVEL_FULL = 4
 VIS_LEVEL_SHADOW = 2
@@ -53,7 +60,7 @@ def move_player(
         for j in range(-1, 2):
             terrain = height_map[ty + i, tx + j]
 
-            if terrain >= Map.HEIGHT_TRANSITION:
+            if terrain >= MAP_HEIGHT_TRANSITION:
                 in_transition = True
 
     # Trace up to target or collision
@@ -64,9 +71,9 @@ def move_player(
                 player_id = player_id_map[ty + i, tx + j]
 
                 if (
-                    ((player_id != Map.PLAYER_ID_NULL) and (player_id != self_id))
-                    or (terrain > Map.HEIGHT_ELEVATED)
-                    or ((terrain == Map.HEIGHT_ELEVATED) and (not in_transition))
+                    ((player_id != MAP_PLAYER_ID_NULL) and (player_id != self_id))
+                    or (terrain > MAP_HEIGHT_ELEVATED)
+                    or ((terrain == MAP_HEIGHT_ELEVATED) and (not in_transition))
                 ):
                     collision_detected = True
 
@@ -137,7 +144,7 @@ def move_object(
         terrain = wall_map[ty, tx]
         object_ = object_map[ty, tx]
 
-        if (terrain == MASK_TERRAIN_WALL) or ((object_ != Map.OBJECT_ID_NULL) and (object_ != self_id)):
+        if (terrain == MASK_TERRAIN_WALL) or ((object_ != MAP_OBJECT_ID_NULL) and (object_ != self_id)):
             collision_detected = True
 
         if collision_detected:
@@ -205,7 +212,7 @@ def trace_shot(
         terrain = height_map[ty, tx]
         player_id = player_id_map[ty, tx]
 
-        if ((player_id != Map.PLAYER_ID_NULL) and (player_id != self_id)) or (terrain > Map.HEIGHT_ELEVATED):
+        if ((player_id != MAP_PLAYER_ID_NULL) and (player_id != self_id)) or (terrain > MAP_HEIGHT_ELEVATED):
             pos_2_check[0] = tx
             pos_2_check[1] = ty
             break
@@ -270,9 +277,9 @@ def trace_sight(
         zone = zone_map[ty, tx]
 
         if (
-            ((player_id != Map.PLAYER_ID_NULL) and (player_id != self_id))
-            or (zone == Map.ZONE_SMOKE)
-            or (terrain > Map.HEIGHT_ELEVATED)
+            ((player_id != MAP_PLAYER_ID_NULL) and (player_id != self_id))
+            or (zone == MAP_ZONE_SMOKE)
+            or (terrain > MAP_HEIGHT_ELEVATED)
         ):
             pos_2_check[0] = tx
             pos_2_check[1] = ty
@@ -336,13 +343,13 @@ def mask_visible_line(
         player_id = player_map[ty, tx]
         zone = zone_map[ty, tx]
 
-        if terrain > Map.HEIGHT_ELEVATED:
+        if terrain > MAP_HEIGHT_ELEVATED:
             break
 
-        elif (zone == Map.ZONE_SMOKE) and (visibility_level > VIS_LEVEL_SMOKE):
+        elif (zone == MAP_ZONE_SMOKE) and (visibility_level > VIS_LEVEL_SMOKE):
             visibility_level = VIS_LEVEL_SMOKE
 
-        elif (player_id != Map.PLAYER_ID_NULL) and (player_id != self_id) and (visibility_level > VIS_LEVEL_SHADOW):
+        elif (player_id != MAP_PLAYER_ID_NULL) and (player_id != self_id) and (visibility_level > VIS_LEVEL_SHADOW):
             visibility_level = VIS_LEVEL_SHADOW
 
         mask[ty, tx] = visibility_level
