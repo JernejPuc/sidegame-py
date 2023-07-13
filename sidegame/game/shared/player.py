@@ -620,6 +620,9 @@ class Player(Entity, PlayerEntity):
         and accordingly update the player collider map.
         """
 
+        if not self.states:
+            return
+
         pos = self.states[-1].data
 
         # Clear past occupied area (with consideration for other occupators), reclaim currently covered area

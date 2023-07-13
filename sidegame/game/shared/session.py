@@ -362,6 +362,11 @@ class Session:
         self.time = 0.
         self.phase = GameID.NULL
 
+        for player in self.players.values():
+            player.kills = 0
+            player.deaths = 0
+            player.money = 0
+
         return Event(Event.CTRL_MATCH_ENDED, (self.time, self.phase, self.rounds_won_t, self.rounds_won_ct))
 
     def check_any_alive(self, players: Iterable[Player]) -> bool:

@@ -11,8 +11,8 @@ import logging
 from socket import timeout
 from collections import deque
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Deque, Dict, Iterable, Tuple, Union
-from time import perf_counter
+from typing import Any, Deque, Dict, Iterable, Tuple, Union
+from time import perf_counter_ns
 
 from sidegame.networking.core import Entry, Action, Entity, Recorder, ClientSocket
 from sidegame.utils import MovingAverageTracker, TickLimiter, StridedFunction, get_logger
@@ -299,7 +299,7 @@ class LiveClient(ClientBase):
         show_fps: bool = True,
         interp_ratio: float = 2.
     ):
-        self._clock: Callable = perf_counter
+        self._clock_ref: int = perf_counter_ns()
 
         self._socket = ClientSocket(server_address, client_message_size, server_message_size)
         self._incoming_buffer: Deque[bytes] = self._socket.node.incoming_buffer
@@ -342,6 +342,9 @@ class LiveClient(ClientBase):
 
         self.session_running: bool = None
         self.logger.debug('Connected to server.')
+
+    def _clock(self) -> float:
+        return (perf_counter_ns() - self._clock_ref) * 1e-9
 
     def _redirect_through_matchmaking(self, request: bytes):
         """
@@ -590,7 +593,7 @@ class ReplayClient(ClientBase):
         logging_level: int = logging.DEBUG,
         show_fps: bool = True
     ):
-        self._clock: Callable = perf_counter
+        self._clock_ref: int = perf_counter_ns()
 
         self._original_tick_rate = original_tick_rate
         self._tick_counter = 0
@@ -623,6 +626,9 @@ class ReplayClient(ClientBase):
         super().__init__(client_id, original_tick_rate, interp_window, init_clock_diff)
 
         self.logger.debug('Replay data loaded.')
+
+    def _clock(self) -> float:
+        return (perf_counter_ns() - self._clock_ref) * 1e-9
 
     def _get_next_batch(self) -> Union[float, None]:
         """Fill the update and action queues with data corresponding to the next tick."""

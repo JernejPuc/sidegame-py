@@ -10,8 +10,8 @@ https://www.gabrielgambetta.com/client-server-game-architecture.html
 import logging
 from collections import deque
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Deque, Dict, Iterable, List, Tuple
-from time import perf_counter
+from typing import Any, Deque, Dict, Iterable, List, Tuple
+from time import perf_counter_ns
 
 from sidegame.networking.core import Entry, Action, EventBase, Entity, Node, ServerSocket
 from sidegame.utils import TickLimiter, StridedFunction, get_logger
@@ -51,7 +51,7 @@ class Server(ABC):
         self._clients: Dict[Tuple[str, int], Node] = self._socket.nodes
         self._blocked_ips = None if ip_config is None or 'Ignored' not in ip_config else ip_config['Ignored']
 
-        self._clock: Callable = perf_counter
+        self._clock_ref: int = perf_counter_ns()
 
         self._tick_limiter = TickLimiter(
             tick_rate,
@@ -77,6 +77,9 @@ class Server(ABC):
 
         self.session_running: bool = None
         self.logger.debug('Accepting connections.')
+
+    def _clock(self) -> float:
+        return (perf_counter_ns() - self._clock_ref) * 1e-9
 
     def run(self) -> int:
         """

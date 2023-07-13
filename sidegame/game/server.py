@@ -476,6 +476,7 @@ class SDGServer(Server):
             bot.name = f'{"bot"[:4-len(str(bot_counter))]}{bot_counter}'
             bot.role = GameID.ROLE_PLAYER
             bot.dev_mode = bool(log_data[2])
+            bot.action_counter = 0
 
             self.session.add_player(bot)
 

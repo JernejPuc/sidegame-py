@@ -157,7 +157,8 @@ class SDGLiveClientBase(LiveClient):
                     sim.enter_world()
 
             elif event_id == Event.CTRL_MATCH_ENDED:
-                session.time, session.phase, session.rounds_won_t, session.rounds_won_ct = event_data[-5:-1]
+                _, _, session.rounds_won_t, session.rounds_won_ct = event_data[-5:-1]
+                session.stop_match()
                 sim.exit_world()
 
             elif event_id == Event.CTRL_MATCH_PHASE_CHANGED:

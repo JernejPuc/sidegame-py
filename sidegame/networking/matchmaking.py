@@ -6,7 +6,7 @@ import multiprocessing as mp
 from argparse import Namespace
 from abc import ABC, abstractmethod
 from typing import Dict, Iterable, List, Set, Tuple
-from time import perf_counter, sleep
+from time import perf_counter_ns, sleep
 
 from sidegame.utils import get_logger
 
@@ -76,13 +76,13 @@ class Matchmaker(ABC):
         self.readable_sockets: List[socket.socket] = [self.reception_socket]
         self.placeholder_sockets: List[socket.socket] = []
 
-        self.clock_reference: float = perf_counter()
+        self.clock_reference: float = perf_counter_ns()
         self.logger = get_logger(name='Matchmaker')
 
     def clock(self) -> float:
         """Get the time (in seconds) since the matchmaker was initialised."""
 
-        return perf_counter() - self.clock_reference
+        return (perf_counter_ns() - self.clock_reference) * 1e-9
 
     def sendall(self, data: bytes, address: Tuple[str, int]):
         """Ensure that the entirety of the data is sent."""
