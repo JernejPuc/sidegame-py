@@ -176,6 +176,7 @@ note that network and device synchronisation also play a role.
 
 For human interfaces, it is expected to be upscaled to higher resolutions,
 using the argument `render_scale`. Here are a few scale-to-resolution correspondences:
+- `0` -- **Fullscreen**
 - `4` -- `1024x576`
 - `5` -- `1280x720`
 - `6.25` -- `1600x900`
@@ -269,8 +270,6 @@ The following open issues are being addressed in 2023:
 
 #### Optimisation
 - Use numba to optimise physics, logic, and drawing wherever possible and beneficial.
-- Revise methods for warping and drawing visual effects to fix graphical artifacts,
-  follow line-of-sight, and improve overall performance.
 - Tweak the audio channel system to better handle many overlapping sounds.
 
 

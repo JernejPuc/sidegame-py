@@ -192,6 +192,7 @@ class SDGLiveClientBase(LiveClient):
                 elif old_phase == GameID.PHASE_RESET and new_phase == GameID.PHASE_BUY:
                     self.remove_object_entities()
                     sim.effects.clear()
+                    sim.fx_map.fill(0)
 
                     # Switch back to own player if viewing others when dead
                     if session.is_dead_player(sim.own_player_id):
@@ -422,13 +423,13 @@ class SDGLiveClientBase(LiveClient):
                     vfx = Fog((0, 0), source.item.radius, source.item.duration)
 
                     source.set_zone_cover(session.map.wall, session.map.zone, session.map.zone_id)
-                    vfx.cover_indices = source.cover_indices
+                    vfx.world_indices = vfx.cover_indices = source.cover_indices
 
                 else:
                     vfx = Flame((0, 0), source.item.radius, source.item.duration)
 
                     source.set_zone_cover(session.map.wall, session.map.zone, session.map.zone_id)
-                    vfx.cover_indices = source.cover_indices
+                    vfx.world_indices = vfx.cover_indices = source.cover_indices
 
                 sim.add_effect(vfx)
 

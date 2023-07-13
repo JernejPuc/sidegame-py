@@ -9,7 +9,7 @@ from sidegame.ext import sdglib
 from sidegame.audio import PlanarAudioSystem as AudioSystem
 from sidegame.effects import Effect, Colour
 from sidegame.graphics import draw_image, draw_text, draw_number, draw_colour, draw_overlay, draw_muted, \
-    get_camera_warp, project_into_view, get_view_endpoints, render_view
+    get_camera_warp, get_inverse_warp, project_into_view, get_view_endpoints, render_view
 from sidegame.game.shared import ASSET_DIR, GameID, Map, Message, Item, Inventory, Object, Player, Session
 
 
@@ -24,6 +24,9 @@ class Simulation:
     WORLD_FRAME_ORIGIN = (95.5, 106.5)
     WORLD_FRAME_SIZE = (192, 108)
     WORLD_BOUNDS = WORLD_FRAME_SIZE[::-1]
+
+    # TODO: Allow maps to differ in size
+    MAP_BOUNDS = (640, 640)
 
     COLOUR_BLACK = np.array([0, 0, 0], dtype=np.uint8)
     COLOUR_WHITE = np.array([255, 255, 255], dtype=np.uint8)
@@ -108,9 +111,11 @@ class Simulation:
         self.code_view_store_ct = self.load_image('views', 'code_store_ct.png', mono=True)
 
         self.last_world_frame: np.ndarray = None
-        self.null_rot_entity_map = np.empty(self.WORLD_BOUNDS, dtype=np.int16)
-        self.null_rot_entity_map.fill(Map.PLAYER_ID_NULL)
-        self.null_rot_zone_map = np.zeros(self.WORLD_BOUNDS, dtype=np.uint8)
+        self.null_entity_map = np.empty(self.MAP_BOUNDS, dtype=np.int16)
+        self.null_entity_map.fill(Map.PLAYER_ID_NULL)
+        self.null_zone_map = np.zeros(self.MAP_BOUNDS, dtype=np.uint8)
+        self.fx_map = np.zeros(self.MAP_BOUNDS, dtype=np.uint8)
+        self.fx_canvas = np.zeros((*self.MAP_BOUNDS, 3), dtype=np.uint8)
 
         self.line_sight_indices = (np.arange(0, 106), np.repeat(64 + 96, 106))
         self.standard_fov_endpoints = get_view_endpoints(self.FOV_MAIN, 108.)
@@ -361,10 +366,13 @@ class Simulation:
             if own_player is not None:
                 self.audio_system.queue_sound(self.sounds['ambient'], own_player, own_player)
 
-        expired_effect_keys = [effect_key for effect_key, effect in self.effects.items() if not effect.update(dt)]
+        expired_effects = [key_effect for key_effect in self.effects.items() if not key_effect[1].update(dt)]
 
-        for effect_key in expired_effect_keys:
-            del self.effects[effect_key]
+        for key, effect in expired_effects:
+            if effect.type == Effect.TYPE_COLOUR:
+                self.fx_map[effect.world_indices] -= 1
+
+            del self.effects[key]
 
     def get_frame(self) -> np.ndarray:
         """Get the image corresponding to the current frame."""
@@ -692,34 +700,39 @@ class Simulation:
 
         # To transform inhabiting effects, objects, and players, their positions need to be warped, as well
         world_warp = get_camera_warp(pos, angle, origin)
-
-        # Transform reference map layers into local frame
-        rot_height_map = project_into_view(map_.height, pos, angle, origin, self.WORLD_FRAME_SIZE, preserve_values=True)
+        inv_warp = get_inverse_warp(pos, angle, origin)
 
         # Hide information from dead observed player
         dead_observant = not player.health and not self.session.is_spectator(self.own_player_id)
 
         if dead_observant:
-            rot_entity_map = self.null_rot_entity_map
-            rot_zone_map = self.null_rot_zone_map
+            entity_map = self.null_entity_map
+            zone_map = self.null_zone_map
+            fx_map = self.null_zone_map
 
         else:
-            rot_entity_map = project_into_view(
-                map_.player_id, pos, angle, origin, self.WORLD_FRAME_SIZE, preserve_values=True)
-            rot_zone_map = project_into_view(map_.zone, pos, angle, origin, self.WORLD_FRAME_SIZE, preserve_values=True)
+            entity_map = map_.player_id
+            zone_map = map_.zone
+            fx_map = self.fx_map
 
-            # Iter over colour effects and display them
+            # Iter over colour effects
             for effect in self.effects.values():
                 if effect.type == Effect.TYPE_COLOUR:
-                    cover_indices = np.dot(world_warp, np.vstack((
-                        effect.cover_indices[1] + effect.pos_x,
-                        effect.cover_indices[0] + effect.pos_y,
-                        np.ones_like(effect.cover_indices[0]))))
+                    draw_colour(
+                        self.fx_canvas, effect.world_indices, effect.colour, effect.opacity,
+                        bounds=self.MAP_BOUNDS, background=map_.world)
 
-                    cover_indices = np.around(cover_indices).astype(np.int16)
-                    cover_indices = (cover_indices[1], cover_indices[0])
-
-                    draw_colour(world, cover_indices, effect.colour, effect.opacity, bounds=self.WORLD_BOUNDS)
+        # Draw effects and render view mask
+        # Differentiate between normal and scoped endpoints wrt. held item
+        if self.observed_player_id == self.own_player_id \
+                and player.held_object is not None and player.held_object.item.scoped:
+            view_mask = render_view(
+                world, map_.height, entity_map, zone_map, fx_map, self.fx_canvas,
+                inv_warp, self.scoped_fov_endpoints, observer_id=player.id)
+        else:
+            view_mask = render_view(
+                world, map_.height, entity_map, zone_map, fx_map, self.fx_canvas,
+                inv_warp, self.standard_fov_endpoints, observer_id=player.id)
 
         # Draw sprites etc.
         # NOTE: 1.03125 is used (instead of 1.) to round down the observed player position after warp to proper place
@@ -786,14 +799,11 @@ class Simulation:
         # Needed for residual effects
         self.last_world_frame = world
 
-        # Differentiate between normal and scoped endpoints wrt. held item
-        if self.observed_player_id == self.own_player_id \
-                and player.held_object is not None and player.held_object.item.scoped:
-            world = render_view(
-                world, rot_height_map, rot_entity_map, rot_zone_map, self.scoped_fov_endpoints, observer_id=player.id)
-        else:
-            world = render_view(
-                world, rot_height_map, rot_entity_map, rot_zone_map, self.standard_fov_endpoints, observer_id=player.id)
+        # Mask with visibility factors
+        view_mask = (view_mask.astype(np.float32) + 4.) / 8.
+        world = world.astype(np.float32)
+
+        world = (view_mask[..., None] * world).astype(np.uint8)
 
         # Draw overlays
         if not dead_observant:
@@ -889,6 +899,9 @@ class Simulation:
         """Give the effect an identifer and add it to tracked effects."""
         effect_id = (max(self.effects.keys()) + 1) if self.effects else 0
         self.effects[effect_id] = effect
+
+        if effect.type == Effect.TYPE_COLOUR:
+            self.fx_map[effect.world_indices] += 1
 
     def create_log(self, eval_type: int) -> Union[List[Union[int, float]], None]:
         """

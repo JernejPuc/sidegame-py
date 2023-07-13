@@ -1,3 +1,5 @@
+"""Used mainly to perform pixel iteration on a lower level."""
+
 import numpy as np
 from numpy import ndarray
 from numba import jit
@@ -26,6 +28,10 @@ def move_player(
     height_map: ndarray,
     player_id_map: ndarray
 ) -> ndarray:
+    """
+    Move player with `self_id` from `pos_1` to `pos_2`.
+    Returns zeros on success and last valid point on collision.
+    """
 
     terrain = 0
     player_id = 0
@@ -111,6 +117,10 @@ def move_object(
     wall_map: ndarray,
     object_map: ndarray
 ) -> ndarray:
+    """
+    Move object with `self_id` from `pos_1` to `pos_2`.
+    Returns zeros on success and last valid point on collision.
+    """
 
     terrain = 0
     object_ = 0
@@ -181,6 +191,10 @@ def trace_shot(
     height_map: ndarray,
     player_id_map: ndarray
 ) -> ndarray:
+    """
+    Trace shot cast by player with `self_id` from `pos_1` in direction of `pos_2`.
+    Returns the point of a hit or zeros on reaching end of range.
+    """
 
     terrain = 0
     player_id = 0
@@ -243,6 +257,10 @@ def trace_sight(
     player_id_map: ndarray,
     zone_map: ndarray
 ) -> ndarray:
+    """
+    Trace line of sight of player with `self_id` from `pos_1` to `pos_2`.
+    Returns zeros on success and last valid point on occlusion.
+    """
 
     terrain = 0
     player_id = 0
@@ -302,8 +320,20 @@ def trace_sight(
     return pos_2_check
 
 
+@jit('UniTuple(int64, 2)(float64[:, :], int64, int64)', nopython=True, nogil=True)
+def warp_indices(warp: ndarray, x: int, y: int) -> tuple[int, int]:
+    x = float(x)
+    y = float(y)
+
+    # TODO: Allow maps to differ in size
+    return (
+        max(0, min(639, round(warp[0, 0] * x + warp[0, 1] * y + warp[0, 2]))),
+        max(0, min(639, round(warp[1, 0] * x + warp[1, 1] * y + warp[1, 2]))))
+
+
 @jit(
-    'uint8[:, :](int16, int64, int64, int64, int64, uint8[:, :], int16[:, :], uint8[:, :], uint8[:, :])',
+    'uint8[:, :](int16, int64, int64, int64, int64, uint8[:, :], int16[:, :], uint8[:, :], '
+    'uint8[:, :], uint8[:, :, :], uint8[:, :, :], float64[:, :], uint8[:, :])',
     nopython=True,
     nogil=True)
 def mask_visible_line(
@@ -315,6 +345,10 @@ def mask_visible_line(
     height_map: ndarray,
     player_map: ndarray,
     zone_map: ndarray,
+    fx_map: ndarray,
+    fx_ref: ndarray,
+    world: ndarray,
+    warp: ndarray,
     mask: ndarray
 ) -> ndarray:
 
@@ -339,9 +373,12 @@ def mask_visible_line(
 
     # Mask up to endpoint or occlusion
     while True:
-        terrain = height_map[ty, tx]
-        player_id = player_map[ty, tx]
-        zone = zone_map[ty, tx]
+        wx, wy = warp_indices(warp, tx, ty)
+
+        terrain = height_map[wy, wx]
+        player_id = player_map[wy, wx]
+        zone = zone_map[wy, wx]
+        fx = fx_map[wy, wx]
 
         if terrain > MAP_HEIGHT_ELEVATED:
             break
@@ -353,6 +390,9 @@ def mask_visible_line(
             visibility_level = VIS_LEVEL_SHADOW
 
         mask[ty, tx] = visibility_level
+
+        if visibility_level > 0 and fx > 0:
+            world[ty, tx] = fx_ref[wy, wx]
 
         # Bresenham
         if (tx == x1) and (ty == y1):
@@ -372,7 +412,9 @@ def mask_visible_line(
 
 
 @jit(
-    'uint8[:, :](int16, uint8[:, :], int16[:, :], uint8[:, :], int64[:], int64[:], int64[:], int64[:])',
+    'uint8[:, :](int16, uint8[:, :], int16[:, :], uint8[:, :], '
+    'uint8[:, :], uint8[:, :, :], uint8[:, :, :], float64[:, :], '
+    'int64[:], int64[:], int64[:], int64[:])',
     nopython=True,
     nogil=True)
 def mask_view(
@@ -380,11 +422,19 @@ def mask_view(
     height_map: ndarray,
     player_map: ndarray,
     zone_map: ndarray,
+    fx_map: ndarray,
+    fx_ref: ndarray,
+    world: ndarray,
+    warp: ndarray,
     left_ends_y: ndarray,
     left_ends_x: ndarray,
     right_ends_y: ndarray,
     right_ends_x: ndarray
 ) -> ndarray:
+    """
+    Cast rays from a preset starting point towards all given endpoints, masking unoccluded points.
+    This is done separately for left and right parts of the view.
+    """
 
     y0 = 107
     x0_left = 95
@@ -398,13 +448,15 @@ def mask_view(
         x1 = left_ends_x[idx]
         y1 = left_ends_y[idx]
 
-        mask = mask_visible_line(self_id, y0, x0_left, y1, x1, height_map, player_map, zone_map, mask)
+        mask = mask_visible_line(
+            self_id, y0, x0_left, y1, x1, height_map, player_map, zone_map, fx_map, fx_ref, world, warp, mask)
 
     for idx in range(right_ends_y.shape[0]):
         x1 = right_ends_x[idx]
         y1 = right_ends_y[idx]
 
-        mask = mask_visible_line(self_id, y0, x0_right, y1, x1, height_map, player_map, zone_map, mask)
+        mask = mask_visible_line(
+            self_id, y0, x0_right, y1, x1, height_map, player_map, zone_map, fx_map, fx_ref, world, warp, mask)
 
     return mask
 
@@ -415,6 +467,10 @@ def mask_ray(
     pos_1: ndarray,
     pos_2: ndarray
 ) -> ndarray:
+    """
+    Cast ray from `pos_1`, the centre of a square with given side `length`, towards an endpoint `pos_2`,
+    masking points that are traversed along the way.
+    """
 
     # Round to pixel positions
     x0 = round(pos_1[0])

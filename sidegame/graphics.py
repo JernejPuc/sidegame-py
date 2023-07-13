@@ -140,7 +140,8 @@ def draw_colour(
     opacity: float = 1.,
     pos_y: int = 0,
     pos_x: int = 0,
-    bounds: Tuple[int] = None
+    bounds: Tuple[int] = None,
+    background: np.ndarray = None
 ):
     """Draw a cover of colour over a part of the canvas."""
 
@@ -150,9 +151,12 @@ def draw_colour(
     if bounds is not None:
         cover_indices = enforce_bounds(cover_indices, bounds)
 
+    if background is None:
+        background = canvas
+
     if opacity != 1.:
         canvas[cover_indices] = (
-            colour[None, None] * opacity + canvas[cover_indices] * (1. - opacity)).astype(canvas.dtype)
+            colour[None, None] * opacity + background[cover_indices] * (1. - opacity)).astype(background.dtype)
     else:
         canvas[cover_indices] = colour
 
@@ -194,6 +198,23 @@ def get_camera_warp(pos: Tuple[float], angle: float, viewpoint: Tuple[float], sc
 
     warp[0, 2] += viewpoint_x - pos_x
     warp[1, 2] += viewpoint_y - pos_y
+
+    return warp
+
+
+def get_inverse_warp(pos: Tuple[float], angle: float, viewpoint: Tuple[float], scale: float = 1.) -> np.ndarray:
+    """
+    Get the matrix corresponding to the transformation of a local system
+    into world coordinates.
+    """
+
+    warp = cv2.getRotationMatrix2D(viewpoint, -angle*180./np.pi, scale)
+
+    pos_x, pos_y = pos
+    viewpoint_x, viewpoint_y = viewpoint
+
+    warp[0, 2] -= viewpoint_x - pos_x
+    warp[1, 2] -= viewpoint_y - pos_y
 
     return warp
 
@@ -278,6 +299,9 @@ def render_view(
     height_map: np.ndarray,
     entity_map: np.ndarray,
     zone_map: np.ndarray,
+    fx_map: np.ndarray,
+    fx_ref: np.ndarray,
+    warp: np.ndarray,
     endpoints: Tuple[np.ndarray],
     observer_id: int = 0
 ) -> np.ndarray:
@@ -292,9 +316,4 @@ def render_view(
     observing entity would itself block the rays from progressing outwards.
     """
 
-    view_mask = sdglib.mask_view(observer_id, height_map, entity_map, zone_map, *endpoints)[..., None]
-
-    # Convert to visibility factors
-    view_mask = (view_mask + 4) / 8.
-
-    return (view_mask * world_view).astype(world_view.dtype)
+    return sdglib.mask_view(observer_id, height_map, entity_map, zone_map, fx_map, fx_ref, world_view, warp, *endpoints)

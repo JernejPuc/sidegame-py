@@ -86,7 +86,7 @@ class SDGLiveClient(SDGLiveClientBase):
         if not args.render_scale:
             fullscreen = True
             *self.window_size, _ = _get_fullscreen_mode()
-            args.render_scale = self.window_size[0] / self.RENDER_SIZE[0]
+            args.render_scale = self.window_size[1] / self.RENDER_SIZE[1]
 
         else:
             fullscreen = False

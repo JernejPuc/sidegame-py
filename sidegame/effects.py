@@ -84,6 +84,7 @@ class Colour(Effect):
         self.cover_indices = cover_indices
         self.pos_y = pos_y
         self.pos_x = pos_x
+        self.world_indices = cover_indices[0] + pos_y, cover_indices[1] + pos_x
 
         self.colour = colour
         self.opacity = opacity
