@@ -10,7 +10,7 @@ https://www.gabrielgambetta.com/lag-compensation.html
 from collections import deque
 from typing import Deque, Dict, Iterable, List, Optional, Tuple, Union
 import numpy as np
-from sidegame.physics import PlayerEntity
+from sidegame.physics import PlayerEntity, update_collider_map
 from sidegame.networking.core import Entry, Action, Entity
 from sidegame.game.shared.core import GameID, Map, Event
 from sidegame.game.shared.inventory import Item, Inventory
@@ -97,8 +97,7 @@ class Player(Entity, PlayerEntity):
         new_pos = spawn_origin + self.SPAWN_OFFSETS[(self.position_id-1) % 5]
         self.angle = self.SPAWN_ANGLES[(self.position_id-1) % 5]
 
-        self.update_collider_map(
-            player_map, self.pos, new_pos, claim_id=self.id, clear_id=Map.PLAYER_ID_NULL, check_cleared_area=True)
+        update_collider_map(self.covered_indices, player_map, self.pos, new_pos, self.id, Map.PLAYER_ID_NULL)
 
         self.pos = new_pos
 
@@ -311,12 +310,13 @@ class Player(Entity, PlayerEntity):
         if footstep_event:
             events.append(Event(Event.FX_FOOTSTEP, self.id))
 
-        self.update_collider_map(
+        update_collider_map(
+            self.covered_indices,
             map_.player_id,
             self.states[-1].data if self.states else self.pos,
             self.pos,
-            claim_id=self.id,
-            clear_id=Map.PLAYER_ID_NULL)
+            self.id,
+            Map.PLAYER_ID_NULL)
 
         self.update_position_history(Entry(self.id, Entry.TYPE_STATE, action.counter, timestamp, self.pos))
 
@@ -609,8 +609,7 @@ class Player(Entity, PlayerEntity):
             return
 
         # Clear currently covered area, occupy past covered area (with consideration for other occupators)
-        self.update_collider_map(
-            player_map, self.pos, pos, claim_id=self.id, clear_id=Map.PLAYER_ID_NULL, check_claimed_area=True)
+        update_collider_map(self.covered_indices, player_map, self.pos, pos, self.id, Map.PLAYER_ID_NULL)
 
         self.pos = pos
 
@@ -627,8 +626,7 @@ class Player(Entity, PlayerEntity):
 
         # Clear past occupied area (with consideration for other occupators), reclaim currently covered area
         # (passes if current position was the closest match)
-        self.update_collider_map(
-            player_map, self.pos, pos, claim_id=self.id, clear_id=Map.PLAYER_ID_NULL, check_cleared_area=True)
+        update_collider_map(self.covered_indices, player_map, self.pos, pos, self.id, Map.PLAYER_ID_NULL)
 
         self.pos = pos
 

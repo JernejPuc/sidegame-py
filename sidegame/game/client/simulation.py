@@ -3,10 +3,13 @@
 import os
 from collections import deque
 from typing import Deque, Dict, List, Tuple, Union
+
 import numpy as np
 import cv2
+
 from sidegame.ext import sdglib
 from sidegame.audio import PlanarAudioSystem as AudioSystem
+from sidegame.physics import fix_angle_range, F_2PI
 from sidegame.effects import Effect, Colour
 from sidegame.graphics import draw_image, draw_text, draw_number, draw_colour, draw_overlay, draw_muted, \
     get_camera_warp, get_inverse_warp, project_into_view, get_view_endpoints, render_view
@@ -341,12 +344,12 @@ class Simulation:
     def get_relative_sprite_index(self, observer: Player, player: Player) -> Tuple[float]:
         """Get index from 0 to (incl.) 15 corresponding to a sprite with the angle as seen by the observer."""
 
-        rel_angle = player.fix_angle_range(player.angle - observer.angle)
+        rel_angle = fix_angle_range(player.angle - observer.angle)
 
         if rel_angle < 0.:
-            rel_angle += Player.F_2PI
+            rel_angle += F_2PI
 
-        rel_angle *= 16. / Player.F_2PI
+        rel_angle *= 16. / F_2PI
 
         return round(rel_angle) if rel_angle < 15.5 else 0
 
@@ -747,7 +750,7 @@ class Simulation:
                 draw_colour(
                     world, self.SPRITE_AURA_INDICES, self.colours[a_player.position_id], opacity=0.3,
                     pos_y=pos_y, pos_x=pos_x, bounds=self.WORLD_BOUNDS)
-                draw_image(world, sprite, pos_y, pos_x, bounds=self.WORLD_BOUNDS)
+                draw_image(world, sprite, pos_y, pos_x)
 
         # Draw persistent objects (with infinite lifetime)
         for an_object in self.session.objects.values():
@@ -774,7 +777,7 @@ class Simulation:
                 angle = self.get_relative_sprite_index(player, a_player)
                 sprite = self.sprites[a_player.team, angle]
 
-                draw_image(world, sprite, pos_y, pos_x, bounds=self.WORLD_BOUNDS)
+                draw_image(world, sprite, pos_y, pos_x)
                 draw_colour(
                     world, self.SPRITE_CAP_INDICES, self.colours[a_player.position_id], opacity=0.75,
                     pos_y=pos_y, pos_x=pos_x, bounds=self.WORLD_BOUNDS)

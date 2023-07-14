@@ -1,8 +1,83 @@
 """Definitions of entities that are realised in the game world."""
 
 from typing import Tuple, Union
+
 import numpy as np
+from numba import jit
+
 from sidegame.ext import sdglib
+
+
+F_PI = np.pi
+F_2PI = 2. * np.pi
+F_PI2 = np.pi / 2.
+F_NPI4 = -np.pi / 4.
+F_N3PI4 = -np.pi * 3. / 4.
+F_SQRT2 = np.sqrt(2.)
+
+_BOUNCE_VEL_PRESERVATION = np.sqrt(2.)/2.
+_VERTICAL_KERNEL = np.array([[-1, -1, -1], [0, 0, 0], [1, 1, 1]], dtype=np.int16)
+_HORIZONTAL_KERNEL = np.array([[-1, 0, 1], [-1, 0, 1], [-1, 0, 1]], dtype=np.int16)
+
+
+@jit('float64(float64)', nopython=True, nogil=True)
+def fix_angle_range(angle: float) -> float:
+    """Ensure that the angle lies between -Pi and Pi."""
+
+    if angle > F_2PI:
+        angle %= F_2PI
+    elif angle < -F_2PI:
+        angle %= -F_2PI
+
+    if angle > F_PI:
+        angle -= F_2PI
+    elif angle < -F_PI:
+        angle += F_2PI
+
+    return angle
+
+
+@jit('void(int64[:, :, :], int16[:, :], float64[:], float64[:], int16, int16)', nopython=True, nogil=True)
+def update_collider_map(
+    covered_indices: np.ndarray,
+    collider_map: np.ndarray,
+    old_pos: np.ndarray,
+    new_pos: np.ndarray,
+    claim_id: int,
+    clear_id: int
+):
+    """
+    Update collider map when moving or rewinding (basically, move the hitbox).
+    Interaction is restricted to indices that belong to claimed (or clear) ID.
+    """
+
+    old_pos_y = round(old_pos[1])
+    old_pos_x = round(old_pos[0])
+
+    new_pos_y = round(new_pos[1])
+    new_pos_x = round(new_pos[0])
+
+    # Update entity map if covered area has changed
+    if old_pos_y == new_pos_y and old_pos_x == new_pos_x and collider_map[old_pos_y, old_pos_x] != clear_id:
+        return
+
+    old_covered_indices_y = (covered_indices[0] + old_pos_y).flatten()
+    old_covered_indices_x = (covered_indices[1] + old_pos_x).flatten()
+
+    new_covered_indices_y = (covered_indices[0] + new_pos_y).flatten()
+    new_covered_indices_x = (covered_indices[1] + new_pos_x).flatten()
+
+    # Clear currently covered area
+    for i_y in old_covered_indices_y:
+        for i_x in old_covered_indices_x:
+            if collider_map[i_y, i_x] == claim_id:
+                collider_map[i_y, i_x] = clear_id
+
+    # Claim newly covered area
+    for i_y in new_covered_indices_y:
+        for i_x in new_covered_indices_x:
+            if collider_map[i_y, i_x] == clear_id:
+                collider_map[i_y, i_x] = claim_id
 
 
 class OrientedEntity:
@@ -27,31 +102,9 @@ class OrientedEntity:
     counter-clockwise, and increase when rotated clockwise.
     """
 
-    F_PI = np.pi
-    F_2PI = 2. * np.pi
-    F_PI2 = np.pi / 2.
-    F_NPI4 = -np.pi / 4.
-    F_N3PI4 = -np.pi * 3. / 4.
-    F_SQRT2 = np.sqrt(2.)
-
     def __init__(self):
         self.pos = np.array([0., 0.])
         self.angle = 0.
-
-    def fix_angle_range(self, angle: float) -> float:
-        """Ensure that the angle lies between -Pi and Pi."""
-
-        if angle > self.F_2PI:
-            angle %= self.F_2PI
-        elif angle < -self.F_2PI:
-            angle %= -self.F_2PI
-
-        if angle > self.F_PI:
-            angle -= self.F_2PI
-        elif angle < -self.F_PI:
-            angle += self.F_2PI
-
-        return angle
 
 
 class ColliderEntity(OrientedEntity):
@@ -103,46 +156,6 @@ class ColliderEntity(OrientedEntity):
 
         return self.covered_indices[0] + pos_y, self.covered_indices[1] + pos_x
 
-    def update_collider_map(
-        self,
-        collider_map: np.ndarray,
-        old_pos: np.ndarray,
-        new_pos: np.ndarray,
-        claim_id: int = 1,
-        clear_id: int = 0,
-        check_claimed_area: bool = False,
-        check_cleared_area: bool = False
-    ):
-        """
-        Update collider map when moving or rewinding
-        (basically, move the hitbox).
-
-        Optionally, restrict interaction to indices that belong to claimed
-        (or clear) ID.
-        """
-
-        # Update entity map if covered area has changed
-        old_pos_y, old_pos_x = self.get_position_indices(old_pos)
-        new_pos_y, new_pos_x = self.get_position_indices(new_pos)
-
-        if old_pos_y != new_pos_y or old_pos_x != new_pos_x or collider_map[old_pos_y, old_pos_x] == clear_id:
-            old_covered_indices = self.get_covered_indices(old_pos)
-            new_covered_indices = self.get_covered_indices(new_pos)
-
-            if check_cleared_area:
-                valid_mask = np.where(collider_map[old_covered_indices] == claim_id)
-                old_covered_indices = old_covered_indices[0][valid_mask], old_covered_indices[1][valid_mask]
-
-            if check_claimed_area:
-                valid_mask = np.where(collider_map[new_covered_indices] == clear_id)
-                new_covered_indices = new_covered_indices[0][valid_mask], new_covered_indices[1][valid_mask]
-
-            # Clear currently covered area
-            collider_map[old_covered_indices] = clear_id
-
-            # Claim newly covered area
-            collider_map[new_covered_indices] = claim_id
-
 
 class ThrowableEntity(ColliderEntity):
     """A pixel-wide object entity that can be thrown and bounce off of walls."""
@@ -150,10 +163,6 @@ class ThrowableEntity(ColliderEntity):
     COLLISION_NONE = 0
     COLLISION_BOUNCE = 1
     COLLISION_LANDING = 2
-
-    _BOUNCE_VEL_PRESERVATION = np.sqrt(2.)/2.
-    _VERTICAL_KERNEL = np.array([[-1, -1, -1], [0, 0, 0], [1, 1, 1]], dtype=np.int16)
-    _HORIZONTAL_KERNEL = np.array([[-1, 0, 1], [-1, 0, 1], [-1, 0, 1]], dtype=np.int16)
 
     def __init__(self, object_id: int = 0):
         super().__init__(1)
@@ -219,14 +228,21 @@ class ThrowableEntity(ColliderEntity):
         new_pos_check = sdglib.move_object(self.id, self.pos, new_pos, wall_map, object_map)
 
         if any(new_pos_check):
-            self.bounce(new_pos_check, wall_map)
+            self.vel, self.pos_target = self.bounce(self.vel, self.pos_target, new_pos_check, wall_map)
             self.pos = new_pos_check
             return self.COLLISION_BOUNCE
         else:
             self.pos = new_pos
             return self.COLLISION_NONE
 
-    def bounce(self, pos_hit: np.ndarray, wall_map: np.ndarray):
+    @staticmethod
+    @jit('UniTuple(float64[:], 2)(float64[:], float64[:], float64[:], uint8[:, :])', nopython=True, nogil=True)
+    def bounce(
+        vel: np.ndarray,
+        pos_target: np.ndarray,
+        pos_hit: np.ndarray,
+        wall_map: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray]:
         """
         Use two kernels, arctan2, and some conditions to 'classify' the area
         around the hit pixel and roughly determine the angle of reflection,
@@ -242,49 +258,51 @@ class ThrowableEntity(ColliderEntity):
         """
 
         pos_x_hit, pos_y_hit = pos_hit
-        pos_x_target, pos_y_target = self.pos_target
+        pos_x_target, pos_y_target = pos_target
 
         # Get correlations
         hit_wall_nbhood = wall_map[round(pos_y_hit)-1:round(pos_y_hit)+2, round(pos_x_hit)-1:round(pos_x_hit)+2]
 
-        corr_y = np.sum(self._VERTICAL_KERNEL * hit_wall_nbhood)
-        corr_x = np.sum(self._HORIZONTAL_KERNEL * hit_wall_nbhood)
+        corr_y = np.sum(_VERTICAL_KERNEL * hit_wall_nbhood)
+        corr_x = np.sum(_HORIZONTAL_KERNEL * hit_wall_nbhood)
 
         # Infer angle of wall's incoming normal
         wall_angle = np.arctan2(corr_y, corr_x)
 
         # Modify wall angle to conform to legacy conditions
         # (edge case handling seemed more intuitive under a different definition)
-        wall_angle -= self.F_PI2
+        wall_angle -= F_PI2
 
         # Get difference relative to wall angle
         incoming_angle = np.arctan2(pos_y_target - pos_y_hit, pos_x_target - pos_x_hit)
-        angle_diff = self.fix_angle_range(incoming_angle - wall_angle)
+        angle_diff = fix_angle_range(incoming_angle - wall_angle)
 
         # Handle edge cases
-        if 0. < angle_diff < self.F_PI:
+        if 0. < angle_diff < F_PI:
             bounce_angle = 2.*wall_angle - incoming_angle
 
-        elif self.F_NPI4 < angle_diff <= 0.:
-            bounce_angle = 2.*wall_angle - incoming_angle - self.F_PI2
+        elif F_NPI4 < angle_diff <= 0.:
+            bounce_angle = 2.*wall_angle - incoming_angle - F_PI2
 
-        elif (angle_diff == self.F_PI) or (-self.F_PI <= angle_diff < self.F_N3PI4):
-            bounce_angle = 2.*wall_angle - incoming_angle + self.F_PI2
+        elif (angle_diff == F_PI) or (-F_PI <= angle_diff < F_N3PI4):
+            bounce_angle = 2.*wall_angle - incoming_angle + F_PI2
 
         else:
-            bounce_angle = 2.*wall_angle - incoming_angle + self.F_PI
+            bounce_angle = 2.*wall_angle - incoming_angle + F_PI
 
-        bounce_angle = self.fix_angle_range(bounce_angle)
+        bounce_angle = fix_angle_range(bounce_angle)
 
         # Get new direction
-        bounce_dir = np.array([np.cos(bounce_angle), np.sin(bounce_angle)])
+        bounce_dir = np.array((np.cos(bounce_angle), np.sin(bounce_angle)))
 
         # Set new target
-        path_remaining = np.linalg.norm(self.pos_target - pos_hit)
-        self.pos_target = pos_hit + bounce_dir * path_remaining
+        path_remaining = np.linalg.norm(pos_target - pos_hit)
+        new_pos_target = pos_hit + bounce_dir * path_remaining
 
         # Set new velocity
-        self.vel = bounce_dir * np.linalg.norm(self.vel) * self._BOUNCE_VEL_PRESERVATION
+        new_vel = bounce_dir * np.linalg.norm(vel) * _BOUNCE_VEL_PRESERVATION
+
+        return new_vel, new_pos_target
 
 
 class PlayerEntity(ColliderEntity):
@@ -353,12 +371,12 @@ class PlayerEntity(ColliderEntity):
         """
 
         # Convert mouse movement to angle difference and add it to current angle
-        self.angle = self.fix_angle_range(self.angle + (mouse_hor * self.MOUSE_MVMT_TO_ANGLE))
+        self.angle = fix_angle_range(self.angle + (mouse_hor * self.MOUSE_MVMT_TO_ANGLE))
 
         # Enforce consistent magnitude of accelerating force
         if force_w and force_d:
-            force_w /= self.F_SQRT2
-            force_d /= self.F_SQRT2
+            force_w /= F_SQRT2
+            force_d /= F_SQRT2
 
         # Get accelerating force in the global system
         force_y = np.sin(self.angle)*force_w + np.cos(self.angle)*force_d

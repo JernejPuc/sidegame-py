@@ -1,23 +1,45 @@
 """Preparation and drawing of elements in image arrays."""
 
 import os
-from typing import Dict, List, Tuple
+from typing import Tuple
+
 import numpy as np
 import cv2
+from numba import jit, types
+from numba.typed import Dict
+
 from sidegame.ext import sdglib
 
 
 _CHAR_DIR: str = os.path.join(os.path.dirname(os.path.abspath(__file__)),  'assets', 'characters')
 _ENDPOINT_PATH: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'assets', 'views', 'endpoints.png')
 
-CHARACTERS: Dict[str, np.ndarray] = {
-    char.split('_')[1][:-4]: cv2.imread(os.path.join(_CHAR_DIR, char), cv2.IMREAD_UNCHANGED)
-    for char in os.listdir(_CHAR_DIR)}
+CHARACTERS: dict[str, np.ndarray] = Dict.empty(
+    key_type=types.unicode_type,
+    value_type=types.Array(types.uint8, 3, 'A', readonly=True))
+
+for char in os.listdir(_CHAR_DIR):
+    CHARACTERS[char.split('_')[1][:-4]] = cv2.imread(os.path.join(_CHAR_DIR, char), cv2.IMREAD_UNCHANGED)
 
 NULL_CHARACTER: np.ndarray = CHARACTERS['null']
-DIGITS: List[np.ndarray] = [CHARACTERS[str(num)] for num in range(10)]
+DIGITS: tuple[np.ndarray] = tuple(CHARACTERS[str(num)] for num in range(10))
 
 
+@jit('uint8[:, :](uint8[:, :], uint8[:, :], float32)', nopython=True, nogil=True)
+def lerp2(a: np.ndarray, b: np.ndarray, x: float) -> np.ndarray:
+    """Linear interpolation between two colour arrays by the given factor."""
+
+    return (a.astype(np.float32) * x + b.astype(np.float32) * (1. - x)).astype(np.uint8)
+
+
+@jit('uint8[:, :, :](uint8[:, :, :], uint8[:, :, :], float32)', nopython=True, nogil=True)
+def lerp3(a: np.ndarray, b: np.ndarray, x: float) -> np.ndarray:
+    """Linear interpolation between two colour images by the given factor."""
+
+    return (a.astype(np.float32) * x + b.astype(np.float32) * (1. - x)).astype(np.uint8)
+
+
+@jit('boolean[:](UniTuple(int64[:], 2), UniTuple(int64, 2))', nopython=True, nogil=True)
 def get_bound_mask(indices: Tuple[np.ndarray], bounds: Tuple[int]) -> np.ndarray:
     """Check if (2D) indices lie within specified bounds (e.g. image dimensions)."""
 
@@ -33,6 +55,7 @@ def get_bound_mask(indices: Tuple[np.ndarray], bounds: Tuple[int]) -> np.ndarray
     return valid_mask
 
 
+@jit('UniTuple(int64[:], 2)(UniTuple(int64[:], 2), UniTuple(int64, 2))', nopython=True, nogil=True)
 def enforce_bounds(indices: Tuple[np.ndarray], bounds: Tuple[int]) -> Tuple[np.ndarray]:
     """Ensure that (2D) indices lie within specified bounds (e.g. image dimensions)."""
 
@@ -41,19 +64,19 @@ def enforce_bounds(indices: Tuple[np.ndarray], bounds: Tuple[int]) -> Tuple[np.n
     return indices[0][valid_mask], indices[1][valid_mask]
 
 
+@jit(
+    (types.Array(types.uint8, 3, 'A'), types.Array(types.uint8, 3, 'A', readonly=True), types.int64, types.int64),
+    nopython=True, nogil=True)
 def draw_image(
     canvas: np.ndarray,
     image: np.ndarray,
     pos_y: int,
-    pos_x: int,
-    bounds: Tuple[int] = None,
-    rel_indices: Tuple[np.ndarray] = None
+    pos_x: int
 ):
     """
     Draw an element corresponding to 4-channel image data.
 
-    The alpha channel (3) is used to determine which parts to draw
-    (unless the relative indices are explicitly provided),
+    The alpha channel (3) is used to determine which parts to draw,
     while positional offsets determine the drawing location.
 
     Note that relative indices are expected to be relative to the top-left
@@ -61,16 +84,17 @@ def draw_image(
     positional offsets to properly centre the drawing on the canvas.
     """
 
-    rel_y, rel_x = np.where(image[..., 3]) if rel_indices is None else rel_indices
-    canvas_indices = rel_y + pos_y, rel_x + pos_x
+    bound_y = canvas.shape[0]
+    bound_x = canvas.shape[1]
 
-    if bounds is not None:
-        valid_mask = get_bound_mask(canvas_indices, bounds)
-        canvas_indices = canvas_indices[0][valid_mask], canvas_indices[1][valid_mask]
-        rel_y = rel_y[valid_mask]
-        rel_x = rel_x[valid_mask]
+    for i_y in range(image.shape[0]):
+        for i_x in range(image.shape[1]):
+            if image[i_y, i_x, 3] > 0:
+                p_y = i_y + pos_y
+                p_x = i_x + pos_x
 
-    canvas[canvas_indices] = image[rel_y, rel_x, :3]
+                if 0 <= p_y < bound_y and 0 <= p_x < bound_x:
+                    canvas[p_y, p_x] = image[i_y, i_x, :3]
 
 
 def draw_text(
@@ -78,8 +102,7 @@ def draw_text(
     text: str,
     pos_y: int,
     pos_x: int,
-    spacing: int = 1,
-    bounds: Tuple[int] = None
+    spacing: int = 1
 ) -> int:
     """
     Draw text as a sequence of characters in rightward order.
@@ -92,20 +115,20 @@ def draw_text(
     spacing += 5
 
     for char in text:
-        draw_image(canvas, CHARACTERS.get(char, NULL_CHARACTER), pos_y, pos_x, bounds=bounds)
+        draw_image(canvas, CHARACTERS.get(char, NULL_CHARACTER), pos_y, pos_x)
         pos_x += spacing
 
     return pos_x
 
 
+@jit(nopython=True, nogil=True)
 def draw_number(
     canvas: np.ndarray,
     num: int,
     pos_y: int,
     pos_x: int,
     spacing: int = 1,
-    min_n_digits: int = 1,
-    bounds: Tuple[int] = None
+    min_n_digits: int = 1
 ):
     """
     Draw a non-negative number as a sequence of digits in leftward order.
@@ -122,8 +145,10 @@ def draw_number(
     n_drawn_digits = 0
 
     while True:
-        num, dig = num // 10, num % 10
-        draw_image(canvas, DIGITS[dig], pos_y, pos_x, bounds=bounds)
+        dig = num % 10
+        num = num // 10
+
+        draw_image(canvas, DIGITS[dig], pos_y, pos_x)
         n_drawn_digits += 1
 
         if num == 0 and n_drawn_digits >= min_n_digits:
@@ -155,8 +180,7 @@ def draw_colour(
         background = canvas
 
     if opacity != 1.:
-        canvas[cover_indices] = (
-            colour[None, None] * opacity + background[cover_indices] * (1. - opacity)).astype(background.dtype)
+        canvas[cover_indices] = lerp2(colour[None], background[cover_indices], opacity)
     else:
         canvas[cover_indices] = colour
 
@@ -170,7 +194,7 @@ def draw_overlay(canvas: np.ndarray, overlay: np.ndarray, opacity: float = 1.) -
         else:
             return np.tile(overlay, (1, 1, canvas.shape[-1]))
 
-    return (overlay * opacity + canvas * (1. - opacity)).astype(canvas.dtype)
+    return lerp3(overlay, canvas, opacity)
 
 
 def draw_muted(canvas: np.ndarray, opacity: float = 0.5) -> np.ndarray:
@@ -217,23 +241,6 @@ def get_inverse_warp(pos: Tuple[float], angle: float, viewpoint: Tuple[float], s
     warp[1, 2] -= viewpoint_y - pos_y
 
     return warp
-
-
-def project_indices(indices: np.ndarray, pos_y: int, pos_x: int, camera_warp: np.ndarray) -> Tuple[np.ndarray]:
-    """
-    Transform indices, corresponding to world coordinates, into a local system.
-
-    Note that the projected indices need to be rounded back into integers,
-    which may cause different indices to map to the same values,
-    causing some glitching, i.e. holes in the represented cover.
-    """
-
-    indices_y, indices_x = indices
-
-    # Project and round to int
-    pos_x, pos_y = np.around(np.dot(camera_warp, (pos_x, pos_y, 1))).astype(indices_y.dtype)
-
-    return indices_y + pos_y, indices_x + pos_x
 
 
 def project_into_view(

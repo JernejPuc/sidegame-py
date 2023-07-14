@@ -4,7 +4,10 @@ from argparse import Namespace
 import struct
 import random
 from typing import Iterable, List, Tuple, Union
+
 from numpy.random import default_rng
+
+from sidegame.physics import fix_angle_range, update_collider_map, F_PI, F_2PI
 from sidegame.effects import Colour, Mark, Explosion, Flame, Fog, Gunfire, Decal, Residual
 from sidegame.networking import Entry, Action, Entity, LiveClient
 from sidegame.game.shared import GameID, Map, Event, Message, Item, Object, Weapon, Incendiary, Smoke, Player, Session
@@ -87,8 +90,8 @@ class SDGLiveClientBase(LiveClient):
             held_object_id, held_object_magazine, held_object_reserve = state_entry.data
 
         if player.team != GameID.GROUP_SPECTATORS and player.health:
-            player.update_collider_map(
-                self.session.map.player_id, old_pos, player.pos, claim_id=player.id, clear_id=Map.PLAYER_ID_NULL)
+            update_collider_map(
+                player.covered_indices, self.session.map.player_id, old_pos, player.pos, player.id, Map.PLAYER_ID_NULL)
 
         if self.stats is not None:
             self.stats.update_from_state(
@@ -784,8 +787,8 @@ class SDGLiveClientBase(LiveClient):
 
             player.move(dt, force_w, force_d, d_angle, walking, max_v, session.map.height, session.map.player_id)
 
-            player.update_collider_map(
-                session.map.player_id, old_pos, player.pos, claim_id=player.id, clear_id=Map.PLAYER_ID_NULL)
+            update_collider_map(
+                player.covered_indices, session.map.player_id, old_pos, player.pos, player.id, Map.PLAYER_ID_NULL)
 
             # Execute draw
             if draw_id:
@@ -896,26 +899,26 @@ class SDGLiveClientBase(LiveClient):
             player.pos[0] = state_ratio * pos_x_2 + (1. - state_ratio) * pos_x_1
             player.pos[1] = state_ratio * pos_y_2 + (1. - state_ratio) * pos_y_1
 
-            player.update_collider_map(
-                self.session.map.player_id, old_pos, player.pos, claim_id=player.id, clear_id=Map.PLAYER_ID_NULL)
+            update_collider_map(
+                player.covered_indices, self.session.map.player_id, old_pos, player.pos, player.id, Map.PLAYER_ID_NULL)
 
             # When crossing -pi/pi, the negative angle needs to be brought into the positive range (or vice versa),
             # so that convex combination can be performed
-            if angle_1*angle_2 < 0. and abs(angle_1 - angle_2) > Player.F_PI:
+            if angle_1*angle_2 < 0. and abs(angle_1 - angle_2) > F_PI:
                 if angle_1 < 0.:
-                    angle_1 += Player.F_2PI
+                    angle_1 += F_2PI
                 else:
-                    angle_2 += Player.F_2PI
+                    angle_2 += F_2PI
 
             angle = state_ratio * angle_2 + (1. - state_ratio) * angle_1
-            player.angle = player.fix_angle_range(angle)
+            player.angle = fix_angle_range(angle)
 
             # Interpolate recoil
             player.d_pos_recoil[0] = state_ratio * r_pos_x_2 + (1. - state_ratio) * r_pos_x_1
             player.d_pos_recoil[1] = state_ratio * r_pos_y_2 + (1. - state_ratio) * r_pos_y_1
 
             r_angle = state_ratio * r_angle_2 + (1. - state_ratio) * r_angle_1
-            player.d_angle_recoil = player.fix_angle_range(r_angle)
+            player.d_angle_recoil = fix_angle_range(r_angle)
 
             # (Re)set held item
             if player.held_object is not None and held_object_id and held_object_id != player.held_object.item.id:

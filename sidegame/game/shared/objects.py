@@ -2,10 +2,11 @@
 
 from collections import deque
 from typing import Dict, Iterable, Optional, Tuple, Union
+
 import numpy as np
 
 from sidegame.ext import sdglib
-from sidegame.physics import ThrowableEntity, PlayerEntity
+from sidegame.physics import ThrowableEntity, PlayerEntity, fix_angle_range, update_collider_map, F_PI, F_PI2, F_2PI
 from sidegame.networking.core import Entity
 from sidegame.game.shared.core import GameID, Map, Event
 from sidegame.game.shared.inventory import Item
@@ -90,7 +91,7 @@ class Object(Entity, ThrowableEntity):
 
         status = self.move(dt, map_.wall, map_.object_id)
 
-        self.update_collider_map(map_.object_id, old_pos, self.pos, claim_id=self.id, clear_id=Map.OBJECT_ID_NULL)
+        update_collider_map(self.covered_indices, map_.object_id, old_pos, self.pos, self.id, Map.OBJECT_ID_NULL)
 
         if status == ThrowableEntity.COLLISION_BOUNCE:
             return [Event(Event.FX_BOUNCE, self.id)]
@@ -225,12 +226,12 @@ class Knife(Object):
         dmg = self.item.base_damage
         d_angle = angle - hit_angle
 
-        if d_angle > self.F_PI:
-            d_angle = -self.F_2PI + d_angle
-        elif d_angle < -self.F_PI:
-            d_angle = self.F_2PI + d_angle
+        if d_angle > F_PI:
+            d_angle = -F_2PI + d_angle
+        elif d_angle < -F_PI:
+            d_angle = F_2PI + d_angle
 
-        if abs(d_angle) < self.F_PI2:
+        if abs(d_angle) < F_PI2:
             dmg *= 3.
 
         return dmg
@@ -292,7 +293,7 @@ class Flash(Object):
         rel_x, rel_y = rel_position
         rel_angle = np.arctan2(rel_y, rel_x)
 
-        viewing_angle = self.fix_angle_range(angle - rel_angle)
+        viewing_angle = fix_angle_range(angle - rel_angle)
         distance = np.linalg.norm(rel_position)
 
         return (1. - np.abs(viewing_angle) / np.pi) * max(0., 1. - distance / 216.)
