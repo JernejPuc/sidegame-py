@@ -14,9 +14,11 @@ import cv2
 import sdl2
 import sdl2.ext
 
+from sidegame.assets import Map
 from sidegame.utils import StridedFunction
 from sidegame.networking import Entry, Action, ReplayClient
-from sidegame.game.shared import GameID, Map, Session
+from sidegame.game import GameID
+from sidegame.game.shared import Session
 from sidegame.game.client.interface import SDGLiveClient, _create_rgb_surface, _get_fullscreen_mode
 from sidegame.game.client.simulation import Simulation
 from sidegame.game.client.tracking import DATA_DIR, StatTracker, FocusTracker
@@ -80,8 +82,8 @@ class SDGReplayClient(ReplayClient):
         self.paused = False
         self.max_tick_counter = self.recorder.split_meta(self.recorder.buffer[-1])[0][1]
 
-        self.sim = Simulation(self.own_entity_id, args.tick_rate, args.volume, args.audio_device, rng=self.rng)
-        self.session: Session = self.sim.session
+        self.session = Session(rng=self.rng)
+        self.sim = Simulation(self.own_entity_id, args.tick_rate, args.audio_device, self.session)
         self.stats = StatTracker(self.session, self.own_entity)
         self.focus = FocusTracker(
             path=args.focus_path,
@@ -319,16 +321,17 @@ class SDGReplayClient(ReplayClient):
 
     def reinit(self):
         self.sim.audio_system.stop()
+        self.sim.map.reset()
 
         self.rng = np.random.default_rng(self.init_args.seed)
         random.seed(self.init_args.seed)
 
-        self.sim = Simulation(
-            self.own_entity_id,
-            self.init_args.tick_rate, self.init_args.volume, self.init_args.audio_device,
-            rng=self.rng)
+        self.session = Session(rng=self.rng)
+        assets = (self.sim.images, self.sim.sounds, self.sim.map, self.sim.inventory)
 
-        self.session = self.sim.session
+        self.sim = Simulation(
+            self.own_entity_id, self.init_args.tick_rate, self.init_args.audio_device, self.session, assets)
+
         self.stats = StatTracker(self.session, self.own_entity)
 
         self.audio_stream = self.sim.audio_system.external_buffer

@@ -5,11 +5,12 @@ from typing import Dict, Iterable, Optional, Tuple, Union
 
 import numpy as np
 
+from sidegame.assets import Map
+from sidegame.game import GameID
 from sidegame.ext import sdglib
 from sidegame.physics import ThrowableEntity, PlayerEntity, fix_angle_range, update_collider_map, F_PI, F_PI2, F_2PI
 from sidegame.networking.core import Entity
-from sidegame.game.shared.core import GameID, Map, Event
-from sidegame.game.shared.inventory import Item
+from sidegame.game.shared import Event, Item
 
 
 class Object(Entity, ThrowableEntity):
@@ -438,7 +439,7 @@ class Incendiary(Object):
             events = [Event(Event.OBJECT_TRIGGER, self.id)]
 
         # Get global indices
-        indices_y, indices_x = np.where(cover)
+        indices_y, indices_x = np.nonzero(cover)
         indices_y -= int(radius)
         indices_x -= int(radius)
         self.cover_indices = indices_y + pos_y, indices_x + pos_x
@@ -567,7 +568,7 @@ class Smoke(Object):
         cover &= ~wall_chunk.astype(bool)
 
         # Get global indices
-        indices_y, indices_x = np.where(cover)
+        indices_y, indices_x = np.nonzero(cover)
         indices_y -= int(radius)
         indices_x -= int(radius)
         self.cover_indices = indices_y + pos_y, indices_x + pos_x

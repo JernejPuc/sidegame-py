@@ -3,11 +3,12 @@
 from itertools import chain
 from collections import deque
 from typing import Deque, Dict, Iterable, Tuple, Union
+
 import numpy as np
-from sidegame.game.shared.core import GameID, Map, Event
-from sidegame.game.shared.inventory import Inventory
-from sidegame.game.shared.objects import Object, C4
-from sidegame.game.shared.player import Player
+
+from sidegame.assets import Map
+from sidegame.game import GameID
+from sidegame.game.shared import Event, Inventory, Object, C4, Player
 
 
 class Session:

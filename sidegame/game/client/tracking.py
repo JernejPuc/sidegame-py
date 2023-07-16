@@ -6,11 +6,16 @@ import struct
 from logging import Logger
 from time import asctime
 from typing import List, Tuple, Union
-import psutil
+
 import numpy as np
+import cv2
+import psutil
+
+from sidegame.assets import ImageBank, Map, ASSET_DIR
 from sidegame.graphics import draw_image
 from sidegame.networking.core import Recorder
-from sidegame.game.shared import GameID, Event, Map, Player, Session
+from sidegame.game import GameID
+from sidegame.game.shared import Event, Player, Session
 from sidegame.game.client.simulation import Simulation
 
 
@@ -643,9 +648,6 @@ class FocusTracker:
     MODE_READ: int = 1
     MODE_WRITE: int = 2
 
-    COLOUR_CYAN = np.array([235, 183, 0], dtype=np.uint8)
-    COLOUR_RED = np.array([0, 0, 224], dtype=np.uint8)
-
     def __init__(self, path: str = None, mode: int = MODE_NULL, start_active: bool = False):
         self.recorder = Recorder(file_path=path)
         self.mode = self.MODE_NULL if path is None else mode
@@ -653,14 +655,19 @@ class FocusTracker:
         if self.mode == self.MODE_READ:
             self.recorder.read()
 
-        self.icon_inactive = Simulation.load_image(None, 'icons', 'pointer_cursor.png')
+        self.icon_inactive = self._load_image('icons', 'pointer_cursor.png')
         self.icon_active = self.icon_inactive.copy()
-        self.icon_inactive[..., :3] = self.COLOUR_CYAN
-        self.icon_active[..., :3] = self.COLOUR_RED
+        self.icon_inactive[..., :3] = ImageBank.COLOURS['t_cyan']
+        self.icon_active[..., :3] = ImageBank.COLOURS['t_red']
 
         self.y, self.x = Simulation.WORLD_FRAME_CENTRE
         self.active = False if path is None else start_active
         self.hidden = True
+
+    def _load_image(*image_path: Union[str, Tuple[str]], mono: bool = False) -> np.ndarray:
+        """Wrapper around `cv2.imread` to minimise path specification."""
+        return cv2.imread(
+            os.path.join(ASSET_DIR, *image_path), flags=cv2.IMREAD_GRAYSCALE if mono else cv2.IMREAD_UNCHANGED)
 
     def update(self, yrel: float, xrel: float):
         """Update focal coordinates according to relative movement."""

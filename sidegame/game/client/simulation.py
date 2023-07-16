@@ -1,19 +1,19 @@
 """Main and supporting methods for client-side world simulation of SDG"""
 
-import os
 from collections import deque
 from typing import Deque, Dict, List, Tuple, Union
 
 import numpy as np
-import cv2
 
+from sidegame.assets import ImageBank, SoundBank, Map
 from sidegame.ext import sdglib
 from sidegame.audio import PlanarAudioSystem as AudioSystem
 from sidegame.physics import fix_angle_range, F_2PI
 from sidegame.effects import Effect, Colour
 from sidegame.graphics import draw_image, draw_text, draw_number, draw_colour, draw_overlay, draw_muted, \
     get_camera_warp, get_inverse_warp, project_into_view, get_view_endpoints, render_view
-from sidegame.game.shared import ASSET_DIR, GameID, Map, Message, Item, Inventory, Object, Player, Session
+from sidegame.game import GameID
+from sidegame.game.shared import Message, Item, Inventory, Object, Player, Session
 
 
 class Simulation:
@@ -28,23 +28,8 @@ class Simulation:
     WORLD_FRAME_SIZE = (192, 108)
     WORLD_BOUNDS = WORLD_FRAME_SIZE[::-1]
 
-    # TODO: Allow maps to differ in size
-    MAP_BOUNDS = (640, 640)
-
-    COLOUR_BLACK = np.array([0, 0, 0], dtype=np.uint8)
-    COLOUR_WHITE = np.array([255, 255, 255], dtype=np.uint8)
-    COLOUR_RED = np.array([0, 0, 255], dtype=np.uint8)
-    COLOUR_GREEN = np.array([0, 255, 0], dtype=np.uint8)
-    COLOUR_BLUE = np.array([255, 0, 0], dtype=np.uint8)
-    COLOUR_ITEM_INF = np.array([140, 80, 140], dtype=np.uint8)
-    COLOUR_ITEM_FUSE = np.array([127, 127, 191], dtype=np.uint8)
-
     RING1_INDICES = (np.array([-1, 0, 0, 1], dtype=np.int16), np.array([0, -1, 1, 0], dtype=np.int16))
     RING2_INDICES = (np.array([-1, -1, 1, 1], dtype=np.int16), np.array([-1, 1, -1, 1], dtype=np.int16))
-
-    # Mapping between world pos and map view pos
-    # y: 535 to x: 90, y: 103 to x: 185 || x: 20 to y: 1, x: 603 to y: 106
-    MAP_WARP = np.array([[0, -95./432., 185. + 103.*95./432.], [105./583., 0, 1. - 105.*20./583.]])
 
     SPRITE_CAP_INDICES = (np.array([1, 1, 2, 2]), np.array([1, 2, 1, 2]))
     SPRITE_AURA_INDICES = Colour.get_disk_indices(2)
@@ -73,21 +58,29 @@ class Simulation:
         self,
         own_player_id: int,
         tick_rate: float,
-        volume: float,
         audio_device: int = 0,
-        rng: np.random.Generator = None
+        session: Session = None,
+        assets: tuple[ImageBank, SoundBank, Map, Inventory] = None
     ):
+        self.session = Session() if session is None else session
+
+        if assets is None:
+            self.images = ImageBank()
+            self.sounds = SoundBank(tick_rate)
+            self.map = Map(0, session.rng)
+            self.inventory = Inventory(self.images, self.sounds.item_sounds)
+
+        else:
+            self.images, self.sounds, self.map, self.inventory = assets
+
         self.audio_system = AudioSystem(
             step_freq=tick_rate,
             max_distance=self.AUDIO_MAX_DISTANCE,
             distance_scaling=self.AUDIO_DISTANCE_SCALING,
             base_volume=self.AUDIO_BASE_VOLUME,
-            init_volume=volume,
             out_device_idx=audio_device)
 
         self.effects: Dict[int, Effect] = {}
-        self.inventory = Inventory(self.load_image, self.load_sound)
-        self.session = Session(rng=rng)
         self.own_player_id = own_player_id
         self.observed_player_id = own_player_id
         self.observer_lock_time = 0.
@@ -100,165 +93,33 @@ class Simulation:
         self.view: int = GameID.VIEW_LOBBY
 
         # View-related
-        self.window_base_lobby = self.load_image('views', 'lobby.png')
-        self.window_base_world = self.load_image('views', 'main.png')
-        self.overlay_mapstats = self.load_image('views', 'mapstats.png')
-        self.overlay_terms = self.load_image('views', 'terms.png')
-        self.overlay_items = self.load_image('views', 'items.png')
-        self.overlay_store_t = self.load_image('views', 'store_t.png')
-        self.overlay_store_ct = self.load_image('views', 'store_ct.png')
-
-        self.code_view_terms = self.load_image('views', 'code_terms.png', mono=True)
-        self.code_view_items = self.load_image('views', 'code_items.png', mono=True)
-        self.code_view_store_t = self.load_image('views', 'code_store_t.png', mono=True)
-        self.code_view_store_ct = self.load_image('views', 'code_store_ct.png', mono=True)
+        self.code_view_terms = self.images['code_view_terms']
+        self.code_view_items = self.images['code_view_items']
+        self.code_view_store_t = self.images['code_view_store_t']
+        self.code_view_store_ct = self.images['code_view_store_ct']
 
         self.last_world_frame: np.ndarray = None
-        self.null_entity_map = np.empty(self.MAP_BOUNDS, dtype=np.int16)
+        self.null_entity_map = np.empty(Map.BOUNDS, dtype=np.int16)
         self.null_entity_map.fill(Map.PLAYER_ID_NULL)
-        self.null_zone_map = np.zeros(self.MAP_BOUNDS, dtype=np.uint8)
-        self.fx_map = np.zeros(self.MAP_BOUNDS, dtype=np.uint8)
-        self.fx_canvas = np.zeros((*self.MAP_BOUNDS, 3), dtype=np.uint8)
+        self.null_zone_map = np.zeros(Map.BOUNDS, dtype=np.uint8)
+        self.fx_map = np.zeros(Map.BOUNDS, dtype=np.uint8)
+        self.fx_canvas = np.zeros((*Map.BOUNDS, 3), dtype=np.uint8)
 
         self.line_sight_indices = (np.arange(0, 106), np.repeat(64 + 96, 106))
         self.standard_fov_endpoints = get_view_endpoints(self.FOV_MAIN, 108.)
         self.scoped_fov_endpoints = get_view_endpoints(self.FOV_SCOPED, 108.)
 
-        # Soundbank
-        self.sounds: Dict[str, List[np.ndarray]] = {
-            'ambient': self.load_sound('sounds', 'general', 'bg_phoenixfacility_01_mod.wav', base_volume=0.5),
-            'clip_low': self.load_sound('sounds', 'general', 'lowammo_01.wav'),
-            'clip_empty': self.load_sound('sounds', 'general', 'clipempty_rifle.wav'),
-            'msg_sent': self.load_sound('sounds', 'general', 'playerping.wav', base_volume=0.5),
-            'msg_deleted': self.load_sound('sounds', 'general', 'menu_accept.wav', base_volume=0.5),
-            'word_added': self.load_sound('sounds', 'general', 'counter_beep.wav', base_volume=0.5),
-            'msg_received': self.load_sound('sounds', 'general', 'lobby_notification_chat.wav', base_volume=0.5),
-            'mark_received': self.load_sound('sounds', 'general', 'ping_alert_01.wav', base_volume=0.5),
-            'reset_round': self.load_sound('sounds', 'general', 'pl_respawn.wav', base_volume=0.5),
-            'reset_side': self.load_sound('sounds', 'general', 'bonus_alert_start.wav', base_volume=0.5),
-            'planted': self.load_sound('sounds', 'general', 'bombpl_mod.wav', base_volume=0.5),
-            'defused': self.load_sound('sounds', 'general', 'bombdef_mod.wav', base_volume=0.5),
-            'ct_win': self.load_sound('sounds', 'general', 'ctwin_mod.wav', base_volume=0.5),
-            't_win': self.load_sound('sounds', 'general', 'terwin_mod.wav', base_volume=0.5),
-            'get': self.load_sound('sounds', 'general', 'pickup_weapon_01.wav'),
-            'drop': self.load_sound('sounds', 'grenades', 'grenade_throw.wav'),
-            'buy': self.load_sound('sounds', 'general', 'radial_menu_buy_02.wav'),
-            'no_buy': self.load_sound('sounds', 'general', 'weapon_cant_buy.wav'),
-            'death': self.load_sound('sounds', 'player', 'death1.wav', base_volume=0.5),
-            'hit': self.load_sound('sounds', 'player', 'kevlar5.wav'),
-            'sine_max': self.load_sound('sounds', 'grenades', 'flashbang_sine1_new.wav'),
-            'sine_mid': self.load_sound('sounds', 'grenades', 'flashbang_sine2_new.wav'),
-            'sine_min': self.load_sound('sounds', 'grenades', 'flashbang_sine3_new.wav')}
+        # Sound bank
+        self.movements = self.sounds.movements
+        self.keypresses = [self.sounds.item_sounds['c4'][f'press{i}'] for i in range(1, 8)]
+        self.footsteps = self.sounds.footsteps
 
-        self.movements: List[List[np.ndarray]] = [
-            self.load_sound('sounds', 'player', 'movement1.wav', base_volume=0.125),
-            self.load_sound('sounds', 'player', 'movement2.wav', base_volume=0.125),
-            self.load_sound('sounds', 'player', 'movement3.wav', base_volume=0.125)]
-
-        self.keypresses: List[List[np.ndarray]] = [self.inventory.c4.sounds[f'press{i}'] for i in range(1, 8)]
-        self.footsteps: Dict[int, List[List[np.ndarray]]] = {}
-
-        terrain_keys = [Map.SOUND_CONCRETE, Map.SOUND_DIRT, Map.SOUND_WOOD, Map.SOUND_METAL, Map.SOUND_TILE]
-        terrains = ['concrete', 'dirt', 'wood', 'metal', 'tile']
-
-        for terrain_key, terrain in zip(terrain_keys, terrains):
-            terrain_path = os.path.join(ASSET_DIR, 'sounds', 'player', terrain)
-
-            self.footsteps[terrain_key] = [
-                self.load_sound('sounds', 'player', terrain, soundfile, base_volume=0.125)
-                for soundfile in os.listdir(terrain_path)]
-
-        # Specific icons
-        self.icon_console_pointer = self.load_image('icons', 'pointer_console.png')
-        self.icon_cursor = self.load_image('icons', 'pointer_cursor.png')
-        self.icon_selected = self.load_image('icons', 'pointer_item.png')
-        self.icon_reset = self.load_image('icons', 'phase_reset.png')
-        self.icon_store = self.load_image('icons', 'phase_buy.png')
-        self.icon_kill = self.load_image('icons', 'term_kill.png')
-
-        self.addressable_icons: Dict[int, np.ndarray] = {
-            GameID.NULL: self.load_image('icons', 'team_spectator.png'),
-            GameID.PLAYER_T1: self.load_image('icons', 'agent_t_0.png'),
-            GameID.PLAYER_T2: self.load_image('icons', 'agent_t_1.png'),
-            GameID.PLAYER_T3: self.load_image('icons', 'agent_t_2.png'),
-            GameID.PLAYER_T4: self.load_image('icons', 'agent_t_3.png'),
-            GameID.PLAYER_T5: self.load_image('icons', 'agent_t_4.png'),
-            GameID.PLAYER_CT1: self.load_image('icons', 'agent_ct_0.png'),
-            GameID.PLAYER_CT2: self.load_image('icons', 'agent_ct_1.png'),
-            GameID.PLAYER_CT3: self.load_image('icons', 'agent_ct_2.png'),
-            GameID.PLAYER_CT4: self.load_image('icons', 'agent_ct_3.png'),
-            GameID.PLAYER_CT5: self.load_image('icons', 'agent_ct_4.png'),
-            GameID.MARK_T1: self.load_image('icons', 'ping_t_0.png'),
-            GameID.MARK_T2: self.load_image('icons', 'ping_t_1.png'),
-            GameID.MARK_T3: self.load_image('icons', 'ping_t_2.png'),
-            GameID.MARK_T4: self.load_image('icons', 'ping_t_3.png'),
-            GameID.MARK_T5: self.load_image('icons', 'ping_t_4.png'),
-            GameID.MARK_CT1: self.load_image('icons', 'ping_ct_0.png'),
-            GameID.MARK_CT2: self.load_image('icons', 'ping_ct_1.png'),
-            GameID.MARK_CT3: self.load_image('icons', 'ping_ct_2.png'),
-            GameID.MARK_CT4: self.load_image('icons', 'ping_ct_3.png'),
-            GameID.MARK_CT5: self.load_image('icons', 'ping_ct_4.png'),
-            GameID.TERM_MOVE: self.load_image('icons', 'term_move.png'),
-            GameID.TERM_HOLD: self.load_image('icons', 'term_hold.png'),
-            GameID.TERM_SEE: self.load_image('icons', 'term_see.png'),
-            GameID.TERM_STOP: self.load_image('icons', 'term_fullstop.png'),
-            GameID.TERM_EXCLAME: self.load_image('icons', 'term_exclamation.png'),
-            GameID.TERM_ASK: self.load_image('icons', 'term_question.png'),
-            GameID.TERM_KILL: self.icon_kill,
-            GameID.ITEM_ARMOUR: self.inventory.armour.icon,
-            GameID.ITEM_RIFLE_T: self.inventory.rifle_t.icon,
-            GameID.ITEM_RIFLE_CT: self.inventory.rifle_ct.icon,
-            GameID.ITEM_SMG_T: self.inventory.smg_t.icon,
-            GameID.ITEM_SMG_CT: self.inventory.smg_ct.icon,
-            GameID.ITEM_SHOTGUN_T: self.inventory.shotgun_t.icon,
-            GameID.ITEM_SHOTGUN_CT: self.inventory.shotgun_ct.icon,
-            GameID.ITEM_SNIPER: self.inventory.sniper.icon,
-            GameID.ITEM_PISTOL_T: self.inventory.pistol_t.icon,
-            GameID.ITEM_PISTOL_CT: self.inventory.pistol_ct.icon,
-            GameID.ITEM_KNIFE: self.inventory.knife.icon,
-            GameID.ITEM_DKIT: self.inventory.dkit.icon,
-            GameID.ITEM_C4: self.inventory.c4.icon,
-            GameID.ITEM_FLASH: self.inventory.flash.icon,
-            GameID.ITEM_EXPLOSIVE: self.inventory.explosive.icon,
-            GameID.ITEM_INCENDIARY_T: self.inventory.incendiary_t.icon,
-            GameID.ITEM_INCENDIARY_CT: self.inventory.incendiary_ct.icon,
-            GameID.ITEM_SMOKE: self.inventory.smoke.icon,
-            GameID.GROUP_TEAM_T: self.load_image('icons', 'team_t.png'),
-            GameID.GROUP_TEAM_CT: self.load_image('icons', 'team_ct.png')}
-
-        # Associate colours with player position ids
-        self.colours: Dict[int, np.ndarray] = {
-            'dead': np.array([0, 0, 0], dtype=np.uint8),
-            'self': np.array([255, 255, 255], dtype=np.uint8),
-            GameID.PLAYER_T1: np.array([0, 248, 160], dtype=np.uint8),
-            GameID.PLAYER_T2: np.array([16, 192, 255], dtype=np.uint8),
-            GameID.PLAYER_T3: np.array([96, 72, 255], dtype=np.uint8),
-            GameID.PLAYER_T4: np.array([224, 96, 160], dtype=np.uint8),
-            GameID.PLAYER_T5: np.array([224, 224, 0], dtype=np.uint8),
-            GameID.PLAYER_CT1: np.array([0, 248, 160], dtype=np.uint8),
-            GameID.PLAYER_CT2: np.array([16, 192, 255], dtype=np.uint8),
-            GameID.PLAYER_CT3: np.array([96, 72, 255], dtype=np.uint8),
-            GameID.PLAYER_CT4: np.array([224, 96, 160], dtype=np.uint8),
-            GameID.PLAYER_CT5: np.array([224, 224, 0], dtype=np.uint8)}
-
-        # Team and angle specific sprites
-        self.sprites: Dict[Tuple[int, int], np.ndarray] = {}
-
-        for i in range(16):
-            self.sprites[(GameID.GROUP_TEAM_T, i)] = self.load_image('sprites', f't_{i}.png')
-            self.sprites[(GameID.GROUP_TEAM_CT, i)] = self.load_image('sprites', f'ct_{i}.png')
-
-        self.sprites[(GameID.GROUP_TEAM_T, -1)] = self.load_image('sprites', 't_dead.png')
-        self.sprites[(GameID.GROUP_TEAM_CT, -1)] = self.load_image('sprites', 'ct_dead.png')
-
-    def load_image(self, *image_path: Union[str, Tuple[str]], mono: bool = False) -> np.ndarray:
-        """Wrapper around `cv2.imread` to minimise path specification."""
-        return cv2.imread(
-            os.path.join(ASSET_DIR, *image_path), flags=cv2.IMREAD_GRAYSCALE if mono else cv2.IMREAD_UNCHANGED)
-
-    def load_sound(self, *sound_path: Union[str, Tuple[str]], base_volume: float = None) -> List[np.ndarray]:
-        """Wrapper around `audio::PlanarAudioSystem.load_sound` to minimise path specification."""
-        return self.audio_system.load_sound(os.path.join(ASSET_DIR, *sound_path), base_volume=base_volume)
+        # Image bank
+        self.addressable_icons = self.images.id_icons
+        self.colours = self.images.COLOURS
+        self.player_colours = self.images.player_colours
+        self.other_colours = self.images.other_colours
+        self.sprites = self.images.sprites
 
     def get_cursor_obs_from_code_view(self, code_view: np.ndarray) -> int:
         """Get the ID corresponding to the position above which the cursor is hovering."""
@@ -334,7 +195,7 @@ class Simulation:
         else:
             line_sight_indices = self.line_sight_indices
 
-        draw_colour(window, line_sight_indices, self.COLOUR_GREEN, opacity=0.1)
+        draw_colour(window, line_sight_indices, self.images['clr_green'], opacity=0.1)
 
     def draw_carried_item(self, window: np.ndarray, obj: Object, pos_y: int, pos_x: int):
         """Draw the item icon of a carried object."""
@@ -395,13 +256,13 @@ class Simulation:
 
                 # Add view overlay according to observed player and view
                 if self.view == GameID.VIEW_TERMS:
-                    window[:108, 64:] = draw_overlay(window[:108, 64:], self.overlay_terms, opacity=0.65)
+                    window[:108, 64:] = draw_overlay(window[:108, 64:], self.images['overlay_terms'], opacity=0.65)
 
                     # Draw hovered term
                     self.draw_cursor_obs_from_code_view(window, self.code_view_terms)
 
                 elif self.view == GameID.VIEW_ITEMS:
-                    window[:108, 64:] = draw_overlay(window[:108, 64:], self.overlay_items, opacity=0.65)
+                    window[:108, 64:] = draw_overlay(window[:108, 64:], self.images['overlay_items'], opacity=0.65)
 
                     # Draw hovered item
                     self.draw_cursor_obs_from_code_view(window, self.code_view_items)
@@ -411,11 +272,15 @@ class Simulation:
 
                     # Draw hovered item
                     if player.team == GameID.GROUP_TEAM_T:
-                        window[:108, 64:] = draw_overlay(window[:108, 64:], self.overlay_store_t, opacity=0.65)
+                        window[:108, 64:] = draw_overlay(
+                            window[:108, 64:], self.images['overlay_store_t'], opacity=0.65)
+
                         self.draw_cursor_obs_from_code_view(window, self.code_view_store_t)
 
                     else:
-                        window[:108, 64:] = draw_overlay(window[:108, 64:], self.overlay_store_ct, opacity=0.65)
+                        window[:108, 64:] = draw_overlay(
+                            window[:108, 64:], self.images['overlay_store_ct'], opacity=0.65)
+
                         self.draw_cursor_obs_from_code_view(window, self.code_view_store_ct)
 
                 # Own world view
@@ -430,13 +295,13 @@ class Simulation:
 
         # Draw cursor
         # NOTE: Cursor values are enforced to lie within valid range when they are externally updated
-        draw_image(window, self.icon_cursor, round(self.cursor_y)-2, round(self.cursor_x)-2)
+        draw_image(window, self.images['icon_cursor'], round(self.cursor_y)-2, round(self.cursor_x)-2)
 
         return window
 
     def lobby(self) -> np.ndarray:
         """Draw the console and players connected to the session."""
-        window: np.ndarray = self.window_base_lobby.copy()
+        window: np.ndarray = self.images['window_base_lobby'].copy()
 
         # Display game status
         draw_text(window, 'in match' if self.session.phase else 'waiting to start', 2, 142)
@@ -464,13 +329,13 @@ class Simulation:
 
         # Draw console
         draw_text(window, self.console_text, 128, 69, spacing=3)
-        draw_image(window, self.icon_console_pointer, 124, 69 + min(len(self.console_text), 22)*8)
+        draw_image(window, self.images['icon_console_pointer'], 124, 69 + min(len(self.console_text), 22)*8)
 
         return window
 
     def main(self) -> np.ndarray:
         """Draw the main HUD with information on current inventory, chat, and match state."""
-        window = self.window_base_world.copy()
+        window = self.images['window_base_world'].copy()
         player: Player = self.session.players[self.own_player_id]
         slots: List[Union[Object, None]] = player.slots
 
@@ -493,7 +358,7 @@ class Simulation:
             pos_y = 110 if slot != Item.SLOT_UTILITY else 126
             pos_x = 185 + 18 * ((slot-1) if slot != Item.SLOT_UTILITY else subslot)
 
-            draw_image(window, self.icon_selected, pos_y, pos_x)
+            draw_image(window, self.images['icon_selected'], pos_y, pos_x)
 
         # Display health, armour, money
         if player.health and player.team != GameID.GROUP_SPECTATORS:
@@ -509,7 +374,7 @@ class Simulation:
         # Display magazine (or reloading/drawing or carried utility) and reserve
         if held_object is not None:
             if player.time_until_drawn or player.time_to_reload:
-                draw_image(window, self.icon_reset, 129, 125)
+                draw_image(window, self.images['icon_reset'], 129, 125)
             elif held_object.item.magazine_cap:
                 draw_number(window, held_object.magazine, 129, 129)
             elif held_object.item.id != GameID.ITEM_KNIFE and held_object.item.slot != Item.SLOT_OTHER:
@@ -532,11 +397,11 @@ class Simulation:
         draw_number(window, int(session.time % 60.), 138, 172, min_n_digits=2)
 
         if phase == GameID.PHASE_BUY:
-            draw_image(window, self.icon_store, 134, 148)
+            draw_image(window, self.images['icon_store'], 134, 148)
         elif phase == GameID.PHASE_DEFUSE:
             draw_image(window, self.inventory.c4.icon, 130, 144)
         elif phase == GameID.PHASE_RESET:
-            draw_image(window, self.icon_reset, 134, 148)
+            draw_image(window, self.images['icon_reset'], 134, 148)
 
         # Display own icon
         if player.team == GameID.GROUP_SPECTATORS:
@@ -577,7 +442,7 @@ class Simulation:
 
     def mapstats(self, window: np.ndarray) -> np.ndarray:
         """Draw player positions on the map besides player statistics."""
-        window[:108, 64:] = self.overlay_mapstats
+        window[:108, 64:] = self.images['overlay_mapstats']
 
         player = self.session.players[self.observed_player_id]
         own_player = self.session.players.get(self.own_player_id, None)
@@ -599,7 +464,7 @@ class Simulation:
         # Draw stat table
         for i, (kdr, pos_id, health, money) in enumerate(stats_t):
             if not health:
-                draw_image(window, self.icon_kill, 6 + i*9, 67)
+                draw_image(window, self.images['icon_kill'], 6 + i*9, 67)
 
             draw_image(window, self.addressable_icons[pos_id], 6 + i*9, 83)
             draw_number(window, int(kdr), 10 + i*9, 104)
@@ -610,7 +475,7 @@ class Simulation:
 
         for i, (kdr, pos_id, health, money) in enumerate(stats_ct):
             if not health:
-                draw_image(window, self.icon_kill, 60 + i*9, 67)
+                draw_image(window, self.images['icon_kill'], 60 + i*9, 67)
 
             draw_image(window, self.addressable_icons[pos_id], 61 + i*9, 83)
             draw_number(window, int(kdr), 65 + i*9, 104)
@@ -621,7 +486,7 @@ class Simulation:
 
         # Transform global coordinates into map view coordinates
         player_pos_id = [
-            (np.dot(self.MAP_WARP, (*a_player.pos, 1.)) + (64, 0), a_player.position_id, a_player.health)
+            (np.dot(Map.MAP_WARP, (*a_player.pos, 1.)) + (64, 0), a_player.position_id, a_player.health)
             for a_player in self.session.players.values() if a_player.team == player.team]
 
         # Pings already in map view coordinates
@@ -635,27 +500,27 @@ class Simulation:
         for (pos_x, pos_y), pos_id, health in player_pos_id:
             pos_y = round(pos_y)
             pos_x = round(pos_x)
-            window[pos_y, pos_x] = self.colours[pos_id]
+            window[pos_y, pos_x] = self.player_colours[pos_id]
 
             ring1_indices = self.RING1_INDICES[0] + pos_y, self.RING1_INDICES[1] + pos_x
             ring2_indices = self.RING2_INDICES[0] + pos_y, self.RING2_INDICES[1] + pos_x
 
             if not health:
-                window[ring1_indices] = np.uint8(self.colours['dead'] * 0.6 + window[ring1_indices] * 0.4)
-                window[ring2_indices] = np.uint8(self.colours['dead'] * 0.3 + window[ring2_indices] * 0.7)
+                window[ring1_indices] = np.uint8(self.other_colours['dead'] * 0.6 + window[ring1_indices] * 0.4)
+                window[ring2_indices] = np.uint8(self.other_colours['dead'] * 0.3 + window[ring2_indices] * 0.7)
             elif pos_id == player.position_id:
-                window[ring1_indices] = np.uint8(self.colours['self'] * 0.6 + window[ring1_indices] * 0.4)
-                window[ring2_indices] = np.uint8(self.colours['self'] * 0.3 + window[ring2_indices] * 0.7)
+                window[ring1_indices] = np.uint8(self.other_colours['self'] * 0.6 + window[ring1_indices] * 0.4)
+                window[ring2_indices] = np.uint8(self.other_colours['self'] * 0.3 + window[ring2_indices] * 0.7)
             else:
-                window[ring1_indices] = np.uint8(self.colours[pos_id] * 0.6 + window[ring1_indices] * 0.4)
-                window[ring2_indices] = np.uint8(self.colours[pos_id] * 0.3 + window[ring2_indices] * 0.7)
+                window[ring1_indices] = np.uint8(self.player_colours[pos_id] * 0.6 + window[ring1_indices] * 0.4)
+                window[ring2_indices] = np.uint8(self.player_colours[pos_id] * 0.3 + window[ring2_indices] * 0.7)
 
         # Display pings for own team
         # NOTE: The other team's pings should not be received at all
         for (pos_x, pos_y), pos_id, cover_indices, fading in ping_pos_id:
             pos_y = round(pos_y)
             pos_x = round(pos_x)
-            colour = self.colours[pos_id - 120]
+            colour = self.player_colours[pos_id - 120]
             draw_colour(window, cover_indices, colour, opacity=fading, pos_y=pos_y, pos_x=pos_x)
 
         # Get cursor obs
@@ -723,7 +588,7 @@ class Simulation:
                 if effect.type == Effect.TYPE_COLOUR:
                     draw_colour(
                         self.fx_canvas, effect.world_indices, effect.colour, effect.opacity,
-                        bounds=self.MAP_BOUNDS, background=map_.world)
+                        bounds=Map.BOUNDS, background=map_.world)
 
         # Draw effects and render view mask
         # Differentiate between normal and scoped endpoints wrt. held item
@@ -748,7 +613,7 @@ class Simulation:
                 sprite = self.sprites[a_player.team, -1]
 
                 draw_colour(
-                    world, self.SPRITE_AURA_INDICES, self.colours[a_player.position_id], opacity=0.3,
+                    world, self.SPRITE_AURA_INDICES, self.player_colours[a_player.position_id], opacity=0.3,
                     pos_y=pos_y, pos_x=pos_x, bounds=self.WORLD_BOUNDS)
                 draw_image(world, sprite, pos_y, pos_x)
 
@@ -759,15 +624,15 @@ class Simulation:
                 pos_x, pos_y = round(pos_x), round(pos_y)
 
                 if 0 <= pos_y <= 107 and 0 <= pos_x <= 191:
-                    world[pos_y, pos_x] = self.COLOUR_ITEM_INF
+                    world[pos_y, pos_x] = self.other_colours['obj_reg']
 
                     # Emphasise C4
                     if 1 <= pos_y <= 106 and 1 <= pos_x <= 190 and an_object.item.id == GameID.ITEM_C4:
                         ring1_indices = self.RING1_INDICES[0] + pos_y, self.RING1_INDICES[1] + pos_x
                         ring2_indices = self.RING2_INDICES[0] + pos_y, self.RING2_INDICES[1] + pos_x
 
-                        world[ring1_indices] = np.uint8(self.COLOUR_ITEM_INF * 0.6 + world[ring1_indices] * 0.4)
-                        world[ring2_indices] = np.uint8(self.COLOUR_ITEM_INF * 0.3 + world[ring2_indices] * 0.7)
+                        world[ring1_indices] = np.uint8(self.other_colours['obj_reg']*0.6 + world[ring1_indices]*0.4)
+                        world[ring2_indices] = np.uint8(self.other_colours['obj_reg']*0.3 + world[ring2_indices]*0.7)
 
         # Draw alive players
         for a_player in self.session.players.values():
@@ -779,7 +644,7 @@ class Simulation:
 
                 draw_image(world, sprite, pos_y, pos_x)
                 draw_colour(
-                    world, self.SPRITE_CAP_INDICES, self.colours[a_player.position_id], opacity=0.75,
+                    world, self.SPRITE_CAP_INDICES, self.player_colours[a_player.position_id], opacity=0.75,
                     pos_y=pos_y, pos_x=pos_x, bounds=self.WORLD_BOUNDS)
 
         # Draw transient objects (with finite lifetime)
@@ -789,15 +654,15 @@ class Simulation:
                 pos_x, pos_y = round(pos_x), round(pos_y)
 
                 if 0 <= pos_y <= 107 and 0 <= pos_x <= 191:
-                    world[pos_y, pos_x] = self.COLOUR_ITEM_FUSE
+                    world[pos_y, pos_x] = self.other_colours['obj_fuse']
 
                     # Emphasise C4
                     if 1 <= pos_y <= 106 and 1 <= pos_x <= 190 and an_object.item.id == GameID.ITEM_C4:
                         ring1_indices = self.RING1_INDICES[0] + pos_y, self.RING1_INDICES[1] + pos_x
                         ring2_indices = self.RING2_INDICES[0] + pos_y, self.RING2_INDICES[1] + pos_x
 
-                        world[ring1_indices] = np.uint8(self.COLOUR_ITEM_FUSE * 0.6 + world[ring1_indices] * 0.4)
-                        world[ring2_indices] = np.uint8(self.COLOUR_ITEM_FUSE * 0.3 + world[ring2_indices] * 0.7)
+                        world[ring1_indices] = np.uint8(self.other_colours['obj_fuse']*0.6 + world[ring1_indices]*0.4)
+                        world[ring2_indices] = np.uint8(self.other_colours['obj_fuse']*0.3 + world[ring2_indices]*0.7)
 
         # Needed for residual effects
         self.last_world_frame = world

@@ -4,7 +4,7 @@ import numpy as np
 from numpy import ndarray
 from numba import jit
 
-from sidegame.game.shared.core import Map
+from sidegame.assets import Map
 
 
 # Redeclare as direct literals for numba
@@ -381,6 +381,9 @@ def mask_visible_line(
         fx = fx_map[wy, wx]
 
         if terrain > MAP_HEIGHT_ELEVATED:
+            if fx > 0:
+                world[ty, tx] = fx_ref[wy, wx]
+
             break
 
         elif (zone == MAP_ZONE_SMOKE) and (visibility_level > VIS_LEVEL_SMOKE):

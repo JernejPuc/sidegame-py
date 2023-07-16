@@ -11,8 +11,10 @@ import cv2
 import sdl2
 import sdl2.ext
 
+from sidegame.assets import Map
 from sidegame.utils import StridedFunction
-from sidegame.game.shared import GameID, Map, Item, Player
+from sidegame.game import GameID
+from sidegame.game.shared import Item, Player
 from sidegame.game.client.base import SDGLiveClientBase
 from sidegame.game.client.tracking import DATA_DIR, PerfMonitor
 

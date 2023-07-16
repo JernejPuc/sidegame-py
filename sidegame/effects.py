@@ -2,6 +2,8 @@
 
 from typing import Union
 import numpy as np
+
+from sidegame.assets import ImageBank
 from sidegame.ext import sdglib
 
 
@@ -108,7 +110,7 @@ class Colour(Effect):
 
         rel_indices = np.indices((radius*2 + 1, radius*2 + 1)) - np.array([radius, radius])[..., None, None]
 
-        indices_y, indices_x = np.where(np.linalg.norm(rel_indices, axis=0) <= radius)
+        indices_y, indices_x = np.nonzero(np.linalg.norm(rel_indices, axis=0) <= radius)
 
         return indices_y - radius, indices_x - radius
 
@@ -121,7 +123,7 @@ class Colour(Effect):
         endpoint = starting_point + np.array([np.cos(angle), np.sin(angle)]) * length
 
         line_mask = sdglib.mask_ray(indexed_area_diameter, starting_point, endpoint)
-        indices_y, indices_x = np.where(line_mask)
+        indices_y, indices_x = np.nonzero(line_mask)
 
         return indices_y - length, indices_x - length
 
@@ -129,7 +131,7 @@ class Colour(Effect):
 class Explosion(Colour):
     """A bright yellow-coloured disk-shaped effect."""
 
-    COLOUR = np.array([0, 255, 255], dtype=np.uint8)
+    COLOUR = ImageBank.COLOURS['yellow']
 
     def __init__(self, pos: np.ndarray, radius: Union[int, float], lifetime: float):
         cover_indices = self.get_disk_indices(round(radius))
@@ -153,7 +155,7 @@ class Explosion(Colour):
 class Flame(Colour):
     """A warm-coloured disk-shaped effect with waning red component."""
 
-    COLOUR = np.array([0, 127, 255], dtype=np.uint8)
+    COLOUR = ImageBank.COLOURS['e_red']
 
     def __init__(self, pos: np.ndarray, radius: Union[int, float], lifetime: float):
         cover_indices = self.get_disk_indices(round(radius))
@@ -177,7 +179,7 @@ class Flame(Colour):
 class Fog(Colour):
     """A grey disk-shaped effect with fading opacity."""
 
-    COLOUR = np.array([63, 63, 63], dtype=np.uint8)
+    COLOUR = ImageBank.COLOURS['grey']
 
     def __init__(self, pos: np.ndarray, radius: Union[int, float], lifetime: float):
         cover_indices = self.get_disk_indices(round(radius))
@@ -203,7 +205,7 @@ class Gunfire(Colour):
     and tied to its initial firing position.
     """
 
-    COLOUR = np.array([63, 191, 191], dtype=np.uint8)
+    COLOUR = ImageBank.COLOURS['e_yellow']
 
     def __init__(self, pos: np.ndarray, angle: float, length: int, lifetime: float):
         cover_indices = self.get_line_indices(angle, length)
@@ -222,18 +224,15 @@ class Decal(Colour):
     Includes fading to convey staleness of the mark.
     """
 
-    COLOUR_BLACK = np.array([0, 0, 0], dtype=np.uint8)
-    COLOUR_RED = np.array([0, 0, 255], dtype=np.uint8)
-
     def __init__(
         self,
         pos_y: Union[int, float],
         pos_x: Union[int, float],
-        colour: np.ndarray = COLOUR_BLACK,
+        colour: np.ndarray = ImageBank.COLOURS['black'],
         opacity: float = 0.8,
         lifetime: float = np.Inf
     ):
-        cover_indices = np.array(0, ndmin=1, dtype=np.int32), np.array(0, ndmin=1, dtype=np.int32)
+        cover_indices = np.array(0, ndmin=1), np.array(0, ndmin=1)
         pos_y = round(pos_y)
         pos_x = round(pos_x)
 

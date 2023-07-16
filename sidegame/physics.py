@@ -6,6 +6,7 @@ import numpy as np
 from numba import jit
 
 from sidegame.ext import sdglib
+from sidegame.audio import OrientedEntity
 
 
 F_PI = np.pi
@@ -78,33 +79,6 @@ def update_collider_map(
         for i_x in new_covered_indices_x:
             if collider_map[i_y, i_x] == clear_id:
                 collider_map[i_y, i_x] = claim_id
-
-
-class OrientedEntity:
-    """
-    An entity with attributes and methods for determining its position and angle.
-    As such, it is sufficient for audio sources and listeners, and serves
-    as a parent class for other types of entities.
-
-    Rounded position coordinates map to pixel centres, so that, for example,
-    (1., 1.) corresponds to the pixel at indices (1, 1), while lines
-    (x, 0.5), (x, 1.5), (0.5, y), and (1.5, y) represent its borders
-    and middle points to neighbouring pixels.
-
-    Coordinates are expected to increase rightwards (x) and upwards (y).
-    Using numpy 2D-array indices as discrete coordinate points,
-    the vertical (y) axis becomes inverted, basically flipping the world
-    over the x axis.
-
-    To retain consistency, this inversion is reflected in the angle definition
-    as well. That is, considering the angles of 0 or 2Pi on the horizontal right
-    and Pi or -Pi on the horizontal left, the angle must decrease when rotated
-    counter-clockwise, and increase when rotated clockwise.
-    """
-
-    def __init__(self):
-        self.pos = np.array([0., 0.])
-        self.angle = 0.
 
 
 class ColliderEntity(OrientedEntity):

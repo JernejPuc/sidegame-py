@@ -6,9 +6,10 @@ from argparse import Namespace
 from collections import deque
 from itertools import combinations
 from typing import Dict, Iterable, Tuple
+
 from sidegame.networking.matchmaking import Client, Matchmaker
 from sidegame.game.server import SDGServer
-from sidegame.game.shared.core import GameID
+from sidegame.game import GameID
 
 
 class SDGClient(Client):

@@ -9,12 +9,14 @@ https://www.gabrielgambetta.com/lag-compensation.html
 
 from collections import deque
 from typing import Deque, Dict, Iterable, List, Optional, Tuple, Union
+
 import numpy as np
+
+from sidegame.assets import Map
+from sidegame.game import GameID
 from sidegame.physics import PlayerEntity, update_collider_map
 from sidegame.networking.core import Entry, Action, Entity
-from sidegame.game.shared.core import GameID, Map, Event
-from sidegame.game.shared.inventory import Item, Inventory
-from sidegame.game.shared.objects import Object, Weapon, Knife, Flash, Explosive, Incendiary, Smoke
+from sidegame.game.shared import Event, Item, Inventory, Object, Weapon, Knife, Flash, Explosive, Incendiary, Smoke
 
 
 class Player(Entity, PlayerEntity):

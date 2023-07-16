@@ -7,10 +7,12 @@ from typing import Iterable, List, Tuple, Union
 
 from numpy.random import default_rng
 
+from sidegame.assets import Map
 from sidegame.physics import fix_angle_range, update_collider_map, F_PI, F_2PI
 from sidegame.effects import Colour, Mark, Explosion, Flame, Fog, Gunfire, Decal, Residual
 from sidegame.networking import Entry, Action, Entity, LiveClient
-from sidegame.game.shared import GameID, Map, Event, Message, Item, Object, Weapon, Incendiary, Smoke, Player, Session
+from sidegame.game import GameID
+from sidegame.game.shared import Event, Message, Item, Object, Weapon, Incendiary, Smoke, Player, Session
 from sidegame.game.client.simulation import Simulation
 from sidegame.game.client.tracking import StatTracker
 
@@ -49,8 +51,8 @@ class SDGLiveClientBase(LiveClient):
             interp_ratio=args.interp_ratio
         )
 
-        self.sim = Simulation(self.own_entity_id, args.tick_rate, args.volume, args.audio_device, rng=self.rng)
-        self.session: Session = self.sim.session
+        self.session = Session(rng=self.rng)
+        self.sim = Simulation(self.own_entity_id, args.tick_rate, args.audio_device, self.session)
         self.stats = StatTracker(self.session, self.own_entity) if args.track_stats else None
         random.seed(args.seed)
 
@@ -522,7 +524,7 @@ class SDGLiveClientBase(LiveClient):
                 obj_id = int(event_data[0])
                 obj = session.objects[obj_id]
                 queue_sound(inventory.c4.sounds['beep_a'], observed_player, obj)
-                sim.add_effect(Colour(Colour.get_disk_indices(3), sim.COLOUR_RED, 0.1, obj.pos[1], obj.pos[0], 0.4))
+                sim.add_effect(Colour(Colour.get_disk_indices(3), sim.colours['red'], 0.1, obj.pos[1], obj.pos[0], 0.4))
 
             elif event_id == Event.FX_C4_BEEP_DEFUSING and accept_experienced_fx:
                 obj_id = int(event_data[0])
@@ -533,11 +535,11 @@ class SDGLiveClientBase(LiveClient):
                 if observed_player.team == GameID.GROUP_TEAM_T:
                     sound = inventory.c4.sounds['beep_a']
                     sim.add_effect(
-                        Colour(Colour.get_disk_indices(3), sim.COLOUR_RED, 0.1, obj.pos[1], obj.pos[0], 0.4))
+                        Colour(Colour.get_disk_indices(3), sim.colours['red'], 0.1, obj.pos[1], obj.pos[0], 0.4))
                 else:
                     sound = inventory.c4.sounds['beep_b']
                     sim.add_effect(
-                        Colour(Colour.get_disk_indices(3), sim.COLOUR_WHITE, 0.1, obj.pos[1], obj.pos[0], 0.4))
+                        Colour(Colour.get_disk_indices(3), sim.colours['white'], 0.1, obj.pos[1], obj.pos[0], 0.4))
 
                 queue_sound(sound, observed_player, obj)
 
@@ -666,7 +668,7 @@ class SDGLiveClientBase(LiveClient):
 
                     # Add blood splatter
                     pos_x, pos_y = player.pos
-                    sim.add_effect(Decal(pos_y, pos_x, colour=Decal.COLOUR_RED, lifetime=20.))
+                    sim.add_effect(Decal(pos_y, pos_x, colour=sim.colours['red'], lifetime=20.))
 
                     if item_id == GameID.ITEM_KNIFE:
                         knife = inventory.knife

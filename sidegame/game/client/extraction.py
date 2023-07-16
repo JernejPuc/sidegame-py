@@ -7,7 +7,7 @@ from collections import deque
 import numpy as np
 import h5py
 
-from sidegame.game.shared import GameID
+from sidegame.game import GameID
 from sidegame.game.client import SDGReplayClient
 from sidegame.audio import get_mel_basis, spectrify
 from sidegame.graphics import get_camera_warp

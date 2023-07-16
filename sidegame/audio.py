@@ -12,7 +12,32 @@ import pyaudio
 import numpy as np
 from scipy.signal import lfilter, butter
 
-from sidegame.physics import OrientedEntity
+
+class OrientedEntity:
+    """
+    An entity with attributes and methods for determining its position and angle.
+    As such, it is sufficient for audio sources and listeners, and serves
+    as a parent class for other types of entities.
+
+    Rounded position coordinates map to pixel centres, so that, for example,
+    (1., 1.) corresponds to the pixel at indices (1, 1), while lines
+    (x, 0.5), (x, 1.5), (0.5, y), and (1.5, y) represent its borders
+    and middle points to neighbouring pixels.
+
+    Coordinates are expected to increase rightwards (x) and upwards (y).
+    Using numpy 2D-array indices as discrete coordinate points,
+    the vertical (y) axis becomes inverted, basically flipping the world
+    over the x axis.
+
+    To retain consistency, this inversion is reflected in the angle definition
+    as well. That is, considering the angles of 0 or 2Pi on the horizontal right
+    and Pi or -Pi on the horizontal left, the angle must decrease when rotated
+    counter-clockwise, and increase when rotated clockwise.
+    """
+
+    def __init__(self):
+        self.pos = np.array([0., 0.])
+        self.angle = 0.
 
 
 class OrientedSound:
@@ -281,33 +306,6 @@ class PlanarAudioSystem:
             with self.external_buffer_io_lock:
                 self.external_buffer.append(self._null_chunk)
 
-    def load_sound(self, filename: str, base_volume: float = None) -> List[np.ndarray]:
-        """
-        Read sound file and load the sound as a sequence of padded (overlapping)
-        sound chunks.
-
-        Padding of sound chunks serves two purposes: it allows per-chunk
-        convolutions and is useful for windowing in spectral analysis.
-
-        The sound is also attenuated to leave room for sound summation.
-        """
-
-        sound = load_sound(filename) * (self._base_volume if base_volume is None else base_volume)
-
-        back_padding = (self._chunk_size - sound.shape[1] % self._chunk_size) % self._chunk_size + 127
-
-        padded_sound = np.pad(sound, ((0, 0), (128, back_padding)))
-        chunk_offset = 128
-        chunks = deque()
-
-        while (chunk_offset + self._chunk_size + 127) <= padded_sound.shape[1]:
-            chunk = padded_sound[:, (chunk_offset - 128):(chunk_offset + self._chunk_size + 127)]
-            chunks.append(chunk)
-
-            chunk_offset += self._chunk_size
-
-        return list(chunks)
-
     def queue_sound(
         self,
         sound: List[np.ndarray],
@@ -382,6 +380,49 @@ class PlanarAudioSystem:
         angle -= angle % 2
 
         return np.vstack([np.convolve(sound[ear], self._hrir_filters[angle][ear], mode='full') for ear in range(2)])
+
+
+class SoundBank(dict):
+    def __init__(self, step_freq: int):
+        super().__init__()
+
+        self._chunk_size = int(PlanarAudioSystem.SAMPLING_RATE // step_freq)
+
+    def load(self, filename: str, name: str, volume_mod: float = 1.) -> List[np.ndarray]:
+        """
+        Read sound file and load the sound as a sequence of padded (overlapping)
+        sound chunks.
+
+        Padding of sound chunks serves two purposes: it allows per-chunk
+        convolutions and is useful for windowing in spectral analysis.
+
+        The sound is also attenuated to leave room for sound summation.
+        """
+
+        if name in self:
+            raise KeyError(f'Sound associated with "{name}" already in sound bank.')
+
+        sound = load_sound(filename)
+
+        if volume_mod != 1.:
+            sound *= volume_mod
+
+        back_padding = (self._chunk_size - sound.shape[1] % self._chunk_size) % self._chunk_size + 127
+
+        padded_sound = np.pad(sound, ((0, 0), (128, back_padding)))
+        chunk_offset = 128
+        chunks = deque()
+
+        while (chunk_offset + self._chunk_size + 127) <= padded_sound.shape[1]:
+            chunk = padded_sound[:, (chunk_offset - 128):(chunk_offset + self._chunk_size + 127)]
+            chunks.append(chunk)
+
+            chunk_offset += self._chunk_size
+
+        chunks = list(chunks)
+        self[name] = chunks
+
+        return chunks
 
 
 def get_mel_basis(sampling_rate: int = 44100, n_fft: int = 2048, n_mel: int = 64) -> np.ndarray:

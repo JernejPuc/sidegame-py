@@ -1,9 +1,9 @@
 """Parameter values for items in SDG"""
 
-from os.path import join as join_path
 from copy import copy
-from typing import Any, Callable, Dict, List, Tuple, Union
-from sidegame.game.shared.core import GameID
+from typing import Any, Dict, List, Tuple, Union
+
+from sidegame.game import GameID
 
 
 class Item:
@@ -44,8 +44,6 @@ class Item:
         fuse_time: Time until the item's effect is triggered.
         duration: Duration of the item's effect.
         radius: Radius of the item's visual and/or functional effect.
-        icon_path: Path to a RGBA image file of the item's icon representation.
-        sound_paths: Dictionary of paths to sound files associated with the item.
     """
 
     # Main slot index
@@ -106,9 +104,7 @@ class Item:
         pellets: int = 1,
         fuse_time: float = 0.,
         duration: float = 0.,
-        radius: float = 0.,
-        icon_path: str = None,
-        sound_paths: Dict[str, str] = None
+        radius: float = 0.
     ):
         self.id = id_
         self.slot = slot
@@ -144,13 +140,10 @@ class Item:
         self.duration = duration
         self.radius = radius
 
-        self.icon_path = icon_path
-        self.sound_paths = sound_paths
-
         self.icon: Any = None
         self.sounds: Dict[str, List[Any]] = None
 
-    def init_assets(self, image_loader: Callable, audio_loader: Callable):
+    def init_assets(self, name: str, images: dict[str, Any], sounds: dict[str, Any]):
         """
         Load the assets pointed to by preset paths.
 
@@ -159,8 +152,8 @@ class Item:
             sounds: Annotated lists of 2D (2-channel) arrays
         """
 
-        self.icon = image_loader(self.icon_path)
-        self.sounds = {sound: audio_loader(self.sound_paths[sound]) for sound in self.sound_paths}
+        self.icon = images[f'item_{name}']
+        self.sounds = sounds[name]
 
     def get_sound(self, sound_key: str) -> Union[List[Any], None]:
         """Try to retrieve a specific sound, returning `None` if not found or inaccessible."""
@@ -198,9 +191,7 @@ class Inventory:
     armour = Item(
         id_=GameID.ITEM_ARMOUR,
         slot=Item.SLOT_ARMOUR,
-        price=650,
-        icon_path=join_path('icons', 'i0_armour.png'),
-        sound_paths={})
+        price=650)
 
     rifle_t = Item(
         id_=GameID.ITEM_RIFLE_T,
@@ -224,14 +215,7 @@ class Inventory:
         standing_inaccuracy=0.014,
         moving_inaccuracy=0.3602,
         firing_inaccuracy=0.0156,
-        flash_level=4,
-        icon_path=join_path('icons', 'i1_rifle_t.png'),
-        sound_paths={
-            'draw': join_path('sounds', 'rifle_t', 'ak47_draw.wav'),
-            'attack': join_path('sounds', 'rifle_t', 'ak47_01.wav'),
-            'reload_start': join_path('sounds', 'rifle_t', 'ak47_clipout.wav'),
-            'reload_add': join_path('sounds', 'rifle_t', 'ak47_clipin.wav'),
-            'reload_end': join_path('sounds', 'rifle_t', 'ak47_boltpull.wav')})
+        flash_level=4)
 
     rifle_ct = Item(
         id_=GameID.ITEM_RIFLE_CT,
@@ -255,14 +239,7 @@ class Inventory:
         standing_inaccuracy=0.011,
         moving_inaccuracy=0.2848,
         firing_inaccuracy=0.014,
-        flash_level=4,
-        icon_path=join_path('icons', 'i1_rifle_ct.png'),
-        sound_paths={
-            'draw': join_path('sounds', 'rifle_ct', 'm4a1_draw.wav'),
-            'attack': join_path('sounds', 'rifle_ct', 'm4a1_01.wav'),
-            'reload_start': join_path('sounds', 'rifle_ct', 'm4a1_clipout.wav'),
-            'reload_add': join_path('sounds', 'rifle_ct', 'm4a1_clipin.wav'),
-            'reload_end': join_path('sounds', 'rifle_ct', 'm4a1_cliphit.wav')})
+        flash_level=4)
 
     smg_t = Item(
         id_=GameID.ITEM_SMG_T,
@@ -286,14 +263,7 @@ class Inventory:
         standing_inaccuracy=0.0289,
         moving_inaccuracy=0.0863,
         firing_inaccuracy=0.0068,
-        flash_level=3,
-        icon_path=join_path('icons', 'i1_smg_t.png'),
-        sound_paths={
-            'draw': join_path('sounds', 'smg_t', 'ump45_draw.wav'),
-            'attack': join_path('sounds', 'smg_t', 'ump45_02.wav'),
-            'reload_start': join_path('sounds', 'smg_t', 'ump45_clipout.wav'),
-            'reload_add': join_path('sounds', 'smg_t', 'ump45_clipin.wav'),
-            'reload_end': join_path('sounds', 'smg_t', 'ump45_bolt_mod.wav')})
+        flash_level=3)
 
     smg_ct = Item(
         id_=GameID.ITEM_SMG_CT,
@@ -317,14 +287,7 @@ class Inventory:
         standing_inaccuracy=0.0192,
         moving_inaccuracy=0.0772,
         firing_inaccuracy=0.0074,
-        flash_level=3,
-        icon_path=join_path('icons', 'i1_smg_ct.png'),
-        sound_paths={
-            'draw': join_path('sounds', 'smg_ct', 'mp9_draw.wav'),
-            'attack': join_path('sounds', 'smg_ct', 'mp9_01.wav'),
-            'reload_start': join_path('sounds', 'smg_ct', 'mp9_clipout.wav'),
-            'reload_add': join_path('sounds', 'smg_ct', 'mp9_clipin.wav'),
-            'reload_end': join_path('sounds', 'smg_ct', 'mp9_bolt_mod.wav')})
+        flash_level=3)
 
     shotgun_t = Item(
         id_=GameID.ITEM_SHOTGUN_T,
@@ -349,13 +312,7 @@ class Inventory:
         moving_inaccuracy=0.1671,
         firing_inaccuracy=0.0194,
         flash_level=3,
-        pellets=9,
-        icon_path=join_path('icons', 'i1_shotgun_t.png'),
-        sound_paths={
-            'draw': join_path('sounds', 'shotgun_t', 'nova_draw.wav'),
-            'attack': join_path('sounds', 'shotgun_t', 'nova-1.wav'),
-            'reload_add': join_path('sounds', 'shotgun_t', 'nova_insertshell.wav'),
-            'reload_end': join_path('sounds', 'shotgun_t', 'nova_pump.wav')})
+        pellets=9)
 
     shotgun_ct = Item(
         id_=GameID.ITEM_SHOTGUN_CT,
@@ -380,14 +337,7 @@ class Inventory:
         moving_inaccuracy=0.1258,
         firing_inaccuracy=0.0224,
         flash_level=3,
-        pellets=8,
-        icon_path=join_path('icons', 'i1_shotgun_ct.png'),
-        sound_paths={
-            'draw': join_path('sounds', 'shotgun_ct', 'mag7_draw.wav'),
-            'attack': join_path('sounds', 'shotgun_ct', 'mag7_01.wav'),
-            'reload_start': join_path('sounds', 'shotgun_ct', 'mag7_clipout.wav'),
-            'reload_add': join_path('sounds', 'shotgun_ct', 'mag7_clipin.wav'),
-            'reload_end': join_path('sounds', 'shotgun_ct', 'mag7_pump_mod.wav')})
+        pellets=8)
 
     sniper = Item(
         id_=GameID.ITEM_SNIPER,
@@ -412,14 +362,7 @@ class Inventory:
         standing_inaccuracy=0.0044,
         moving_inaccuracy=0.5040,
         firing_inaccuracy=0.1076,
-        flash_level=5,
-        icon_path=join_path('icons', 'i1_sniper.png'),
-        sound_paths={
-            'draw': join_path('sounds', 'sniper', 'awp_draw.wav'),
-            'attack': join_path('sounds', 'sniper', 'awp_01.wav'),
-            'reload_start': join_path('sounds', 'sniper', 'awp_clipout.wav'),
-            'reload_add': join_path('sounds', 'sniper', 'awp_clip_mod.wav'),
-            'reload_end': join_path('sounds', 'sniper', 'awp_bolt_mod.wav')})
+        flash_level=5)
 
     pistol_t = Item(
         id_=GameID.ITEM_PISTOL_T,
@@ -443,14 +386,7 @@ class Inventory:
         standing_inaccuracy=0.0152,
         moving_inaccuracy=0.0352,
         firing_inaccuracy=0.1119,
-        flash_level=2,
-        icon_path=join_path('icons', 'i2_pistol_t.png'),
-        sound_paths={
-            'draw': join_path('sounds', 'pistol_t', 'glock_draw.wav'),
-            'attack': join_path('sounds', 'pistol_t', 'hkp2000_01.wav'),
-            'reload_start': join_path('sounds', 'pistol_t', 'glock_clipout.wav'),
-            'reload_add': join_path('sounds', 'pistol_t', 'glock_clipin.wav'),
-            'reload_end': join_path('sounds', 'pistol_t', 'glock_slide_mod.wav')})
+        flash_level=2)
 
     pistol_ct = Item(
         id_=GameID.ITEM_PISTOL_CT,
@@ -474,14 +410,7 @@ class Inventory:
         standing_inaccuracy=0.0128,
         moving_inaccuracy=0.0405,
         firing_inaccuracy=0.1418,
-        flash_level=2,
-        icon_path=join_path('icons', 'i2_pistol_ct.png'),
-        sound_paths={
-            'draw': join_path('sounds', 'pistol_ct', 'usp_draw.wav'),
-            'attack': join_path('sounds', 'pistol_ct', 'usp_01.wav'),
-            'reload_start': join_path('sounds', 'pistol_ct', 'usp_sliderelease.wav'),
-            'reload_add': join_path('sounds', 'pistol_ct', 'usp_clipin_mod.wav'),
-            'reload_end': join_path('sounds', 'pistol_ct', 'usp_slideback.wav')})
+        flash_level=2)
 
     knife = Item(
         id_=GameID.ITEM_KNIFE,
@@ -492,13 +421,7 @@ class Inventory:
         use_interval=1.,
         draw_time=1.,
         base_damage=65.,
-        armour_pen=0.85,
-        icon_path=join_path('icons', 'i3_knife.png'),
-        sound_paths={
-            'draw': join_path('sounds', 'knife', 'knife_deploy.wav'),
-            'attack': join_path('sounds', 'knife', 'knife_slash1.wav'),
-            'front_hit': join_path('sounds', 'knife', 'knife_hit_01.wav'),
-            'back_hit': join_path('sounds', 'knife', 'knife_stab.wav')})
+        armour_pen=0.85)
 
     c4 = Item(
         id_=GameID.ITEM_C4,
@@ -506,33 +429,13 @@ class Inventory:
         subslot=Item.SUBSLOT_NULL,
         base_damage=500.,
         armour_pen=0.6,
-        radius=204.,
-        icon_path=join_path('icons', 'i4_c4.png'),
-        sound_paths={
-            'draw': join_path('sounds', 'c4', 'c4_draw.wav'),
-            'init': join_path('sounds', 'c4', 'c4_initiate.wav'),
-            'press1': join_path('sounds', 'c4', 'key_press1.wav'),
-            'press2': join_path('sounds', 'c4', 'key_press2.wav'),
-            'press3': join_path('sounds', 'c4', 'key_press3.wav'),
-            'press4': join_path('sounds', 'c4', 'key_press4.wav'),
-            'press5': join_path('sounds', 'c4', 'key_press5.wav'),
-            'press6': join_path('sounds', 'c4', 'key_press6.wav'),
-            'press7': join_path('sounds', 'c4', 'key_press7.wav'),
-            'plant': join_path('sounds', 'c4', 'c4_plant.wav'),
-            'disarming': join_path('sounds', 'c4', 'c4_disarmstart.wav'),
-            'disarmed': join_path('sounds', 'c4', 'c4_disarmfinish.wav'),
-            'nvg': join_path('sounds', 'c4', 'nvg_on_mod.wav'),
-            'explode': join_path('sounds', 'c4', 'c4_explode1.wav'),
-            'beep_a': join_path('sounds', 'c4', 'c4_beep2.wav'),
-            'beep_b': join_path('sounds', 'c4', 'c4_beep3.wav')})
+        radius=204.)
 
     dkit = Item(
         id_=GameID.ITEM_DKIT,
         slot=Item.SLOT_OTHER,
         subslot=Item.SUBSLOT_NULL,
-        price=400,
-        icon_path=join_path('icons', 'i4_dkit.png'),
-        sound_paths={'draw': join_path('sounds', 'c4', 'c4_draw.wav')})
+        price=400)
 
     flash = Item(
         id_=GameID.ITEM_FLASH,
@@ -545,14 +448,7 @@ class Inventory:
         use_pos_offset=-0.5,
         use_angle_std=0.003,
         fuse_time=1.7,
-        radius=5.,
-        icon_path=join_path('icons', 'i5_flash.png'),
-        sound_paths={
-            'attack': join_path('sounds', 'grenades', 'grenade_throw.wav'),
-            'bounce': join_path('sounds', 'grenades', 'he_bounce-1.wav'),
-            'land': join_path('sounds', 'grenades', 'grenade_hit1.wav'),
-            'draw': join_path('sounds', 'grenades', 'flashbang_draw.wav'),
-            'detonate': join_path('sounds', 'grenades', 'flashbang_explode1.wav')})
+        radius=5.)
 
     explosive = Item(
         id_=GameID.ITEM_EXPLOSIVE,
@@ -566,14 +462,7 @@ class Inventory:
         base_damage=98.,
         armour_pen=0.575,
         fuse_time=1.7,
-        radius=44.7,
-        icon_path=join_path('icons', 'i5_explosive.png'),
-        sound_paths={
-            'attack': join_path('sounds', 'grenades', 'grenade_throw.wav'),
-            'bounce': join_path('sounds', 'grenades', 'he_bounce-1.wav'),
-            'land': join_path('sounds', 'grenades', 'grenade_hit1.wav'),
-            'draw': join_path('sounds', 'grenades', 'he_draw.wav'),
-            'detonate': join_path('sounds', 'grenades', 'hegrenade_detonate_03.wav')})
+        radius=44.7)
 
     incendiary_t = Item(
         id_=GameID.ITEM_INCENDIARY_T,
@@ -588,15 +477,7 @@ class Inventory:
         armour_pen=1.,
         fuse_time=2.1,
         duration=7.,
-        radius=12.1,
-        icon_path=join_path('icons', 'i5_incendiary_t.png'),
-        sound_paths={
-            'attack': join_path('sounds', 'grenades', 'grenade_throw.wav'),
-            'bounce': join_path('sounds', 'grenades', 'he_bounce-1.wav'),
-            'land': join_path('sounds', 'grenades', 'grenade_hit1.wav'),
-            'draw': join_path('sounds', 'grenades', 'molotov_draw.wav'),
-            'detonate': join_path('sounds', 'grenades', 'molotov_detonate_1_mod.wav'),
-            'extinguish': join_path('sounds', 'grenades', 'molotov_extinguish.wav')})
+        radius=12.1)
 
     incendiary_ct = Item(
         id_=GameID.ITEM_INCENDIARY_CT,
@@ -611,15 +492,7 @@ class Inventory:
         armour_pen=1.,
         fuse_time=2.1,
         duration=7.,
-        radius=12.1,
-        icon_path=join_path('icons', 'i5_incendiary_ct.png'),
-        sound_paths={
-            'attack': join_path('sounds', 'grenades', 'grenade_throw.wav'),
-            'bounce': join_path('sounds', 'grenades', 'he_bounce-1.wav'),
-            'land': join_path('sounds', 'grenades', 'grenade_hit1.wav'),
-            'draw': join_path('sounds', 'grenades', 'molotov_draw.wav'),
-            'detonate': join_path('sounds', 'grenades', 'molotov_detonate_1_mod.wav'),
-            'extinguish': join_path('sounds', 'grenades', 'molotov_extinguish.wav')})
+        radius=12.1)
 
     smoke = Item(
         id_=GameID.ITEM_SMOKE,
@@ -632,14 +505,7 @@ class Inventory:
         use_angle_std=0.003,
         fuse_time=2.1,
         duration=18.,
-        radius=16.8,
-        icon_path=join_path('icons', 'i5_smoke.png'),
-        sound_paths={
-            'attack': join_path('sounds', 'grenades', 'grenade_throw.wav'),
-            'bounce': join_path('sounds', 'grenades', 'he_bounce-1.wav'),
-            'land': join_path('sounds', 'grenades', 'grenade_hit1.wav'),
-            'draw': join_path('sounds', 'grenades', 'smokegrenade_draw.wav'),
-            'detonate': join_path('sounds', 'grenades', 'smoke_emit.wav')})
+        radius=16.8)
 
     _ITEM_KEYS = (
         'armour',
@@ -661,15 +527,15 @@ class Inventory:
         'incendiary_ct',
         'smoke')
 
-    def __init__(self, image_loader: Callable = None, audio_loader: Callable = None):
+    def __init__(self, images: dict[str, Any] = None, sounds: dict[str, Any] = None):
         self._id_dict: Dict[int, Item] = {}
 
         for item_key in self._ITEM_KEYS:
             item = getattr(self, item_key)
 
-            if image_loader is not None and audio_loader is not None:
+            if images is not None and sounds is not None:
                 item = copy(item)
-                item.init_assets(image_loader, audio_loader)
+                item.init_assets(item_key, images, sounds)
                 setattr(self, item_key, item)
 
             self._id_dict[item.id] = item

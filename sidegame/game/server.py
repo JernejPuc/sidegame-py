@@ -5,8 +5,11 @@ from argparse import Namespace
 from collections import deque
 from typing import Any, Deque, Dict, Iterable, List, Tuple, Union
 from numpy.random import default_rng
+
+from sidegame.assets import Map
 from sidegame.networking import Entry, Action, Entity, Server
-from sidegame.game.shared import GameID, Map, Event, Message, Inventory, Object, C4, Player, Session
+from sidegame.game import GameID
+from sidegame.game.shared import Event, Message, Inventory, Object, C4, Player, Session
 
 
 class SDGServer(Server):
