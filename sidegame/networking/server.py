@@ -8,12 +8,11 @@ https://www.gabrielgambetta.com/client-server-game-architecture.html
 """
 
 import logging
-from collections import deque
 from abc import ABC, abstractmethod
-from typing import Any, Deque, Dict, Iterable, List, Tuple
+from typing import Any, Dict, Iterable, List, Tuple
 from time import perf_counter_ns
 
-from sidegame.networking.core import Entry, Action, EventBase, Entity, Node, ServerSocket
+from sidegame.networking.core import Entry, Action, Event, Entity, Node, ServerSocket
 from sidegame.utils import TickLimiter, StridedFunction, get_logger
 
 
@@ -66,8 +65,8 @@ class Server(ABC):
 
         self._global_log_counter = -1
         self._global_logs: Dict[Entry] = {}
-        self._queued_local_logs: Deque[Action] = deque()
-        self._queued_events: Deque[EventBase] = deque()
+        self._queued_local_logs: List[Action] = []
+        self._queued_events: List[Event] = []
 
         self._tick_interval = 1. / tick_rate
         self._update_rate = update_rate
@@ -303,8 +302,8 @@ class Server(ABC):
         self,
         dt: float,
         timestamp: float,
-        queued_logs: Deque[Action],
-        queued_events: Deque[EventBase]
+        queued_logs: List[Action],
+        queued_events: List[Event]
     ) -> Iterable[Tuple[int, Any]]:
         """
         Consolidate the authoritative state wrt. logs and events produced

@@ -4,6 +4,7 @@ import os
 import ctypes
 import struct
 from argparse import Namespace
+from math import copysign
 from typing import Any, Callable, Tuple, Union
 
 import numpy as np
@@ -11,10 +12,8 @@ import cv2
 import sdl2
 import sdl2.ext
 
-from sidegame.assets import Map
 from sidegame.utils import StridedFunction
-from sidegame.game import GameID
-from sidegame.game.shared import Item, Player
+from sidegame.game import GameID, MapID
 from sidegame.game.client.base import SDGLiveClientBase
 from sidegame.game.client.tracking import DATA_DIR, PerfMonitor
 
@@ -61,7 +60,7 @@ class SDGLiveClient(SDGLiveClientBase):
     while a background thread feeds sound chunks into `pyaudio.Stream`.
     """
 
-    WINDOW_NAME = 'SiDeGame v2023-07-16'
+    WINDOW_NAME = 'SiDeGame v2023-07-23'
     RENDER_SIZE = (256, 144)
 
     # Tracked mouse/keyboard state indices
@@ -180,11 +179,11 @@ class SDGLiveClient(SDGLiveClientBase):
 
                 # General
                 if keysim == sdl2.SDLK_UP:
-                    sim.audio_system.volume = np.clip(sim.audio_system.volume + 0.05, 0., 2.)
+                    sim.audio_system.volume = min(2., sim.audio_system.volume + 0.05)
                     self.logger.info('Volume increased to %.2f', sim.audio_system.volume)
 
                 elif keysim == sdl2.SDLK_DOWN:
-                    sim.audio_system.volume = np.clip(sim.audio_system.volume - 0.05, 0., 2.)
+                    sim.audio_system.volume = max(0., sim.audio_system.volume - 0.05)
                     self.logger.info('Volume decreased to %.2f', sim.audio_system.volume)
 
                 # In lobby
@@ -450,25 +449,32 @@ class SDGLiveClient(SDGLiveClientBase):
 
         # Discretise mouse motion (for AI demos)
         if self.discretise_mouse:
-            mmot_yrel = self.mouse_bins[np.argmin(np.abs(np.abs(mmot_yrel) - self.mouse_bins))] * np.sign(mmot_yrel)
-            mmot_xrel = self.mouse_bins[np.argmin(np.abs(np.abs(mmot_xrel) - self.mouse_bins))] * np.sign(mmot_xrel)
+            mmot_yrel = copysign(self.mouse_bins[np.argmin(np.abs(abs(mmot_yrel) - self.mouse_bins))], mmot_yrel)
+            mmot_xrel = copysign(self.mouse_bins[np.argmin(np.abs(abs(mmot_xrel) - self.mouse_bins))], mmot_xrel)
 
         # Update cursor and angle movement
-        sim.cursor_y = np.clip(sim.cursor_y + mmot_yrel, 2., 105.)
+        sim.cursor_y = max(2., min(105., sim.cursor_y + mmot_yrel))
 
         if sim.view == GameID.VIEW_WORLD and not session.is_dead_or_spectator(sim.own_player_id):
             sim.cursor_x = 159.5
             d_angle = float(mmot_xrel)
+
         else:
-            sim.cursor_x = np.clip(sim.cursor_x + mmot_xrel, 66., 253.)
+            sim.cursor_x = max(66., min(253., sim.cursor_x + mmot_xrel))
             d_angle = 0.
 
         # Get drawn item id from key num
-        draw_id = self.get_next_item_by_slot(kbd_num)
+        player = session.players.get(sim.own_player_id, None)
+
+        if kbd_num and session.phase and player is not None:
+            draw_id = player.get_next_item_by_slot(kbd_num)
+
+        else:
+            draw_id = GameID.NULL
 
         # Get hovered (entity) ID
         hovered_id = GameID.NULL
-        hovered_entity_id = Map.PLAYER_ID_NULL
+        hovered_entity_id = MapID.PLAYER_ID_NULL
 
         if sim.view == GameID.VIEW_WORLD:
             if session.is_dead_or_spectator(sim.own_player_id):
@@ -497,32 +503,6 @@ class SDGLiveClient(SDGLiveClientBase):
             max(-1, min(1, mwhl_y)) + 1, sim.view, hovered_id, hovered_entity_id, d_angle]
 
         return state, log
-
-    def get_next_item_by_slot(self, slot: int, subslot: int = 0) -> int:
-        """
-        Get the ID of the item at the specified slot. If the player is holding
-        a utility, which can share its slot with multiple others, the utilities
-        are cycled through to the next.
-        """
-
-        if not slot or not self.session.phase:
-            return GameID.NULL
-
-        player: Player = self.session.players.get(self.sim.own_player_id, None)
-
-        if player is None:
-            return GameID.NULL
-
-        if slot == Item.SLOT_UTILITY and any(player.slots[Item.SLOT_UTILITY:]):
-            if slot == player.held_object.item.slot:
-                subslot = 0 if player.held_object.item.subslot == 3 else (player.held_object.item.subslot + 1)
-
-            while player.slots[slot + subslot] is None:
-                subslot = 0 if subslot == 3 else (subslot + 1)
-
-        obj = player.slots[slot + subslot]
-
-        return obj.item.id if obj is not None else GameID.NULL
 
     def generate_output(self, dt: float):
         self.sim.eval_effects(dt * self.time_scale)

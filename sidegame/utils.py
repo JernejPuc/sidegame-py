@@ -97,7 +97,7 @@ class MovingAverageTracker:
 
         if len(self.buffer) >= self.window_length:
             while len(self.buffer) > self.window_length:
-                del self.buffer[0]
+                self.buffer.popleft()
 
         else:
             self.buffer_full = False

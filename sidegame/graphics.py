@@ -1,46 +1,37 @@
 """Preparation and drawing of elements in image arrays."""
 
-import os
-from typing import Tuple
-
 import numpy as np
 import cv2
+from numpy import ndarray
 from numba import jit, types
-from numba.typed import Dict
 
-from sidegame.ext import sdglib
-
-
-_CHAR_DIR: str = os.path.join(os.path.dirname(os.path.abspath(__file__)),  'assets', 'characters')
-_ENDPOINT_PATH: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'assets', 'views', 'endpoints.png')
-
-CHARACTERS: dict[str, np.ndarray] = Dict.empty(
-    key_type=types.unicode_type,
-    value_type=types.Array(types.uint8, 3, 'A', readonly=True))
-
-for char in os.listdir(_CHAR_DIR):
-    CHARACTERS[char.split('_')[1][:-4]] = cv2.imread(os.path.join(_CHAR_DIR, char), cv2.IMREAD_UNCHANGED)
-
-NULL_CHARACTER: np.ndarray = CHARACTERS['null']
-DIGITS: tuple[np.ndarray] = tuple(CHARACTERS[str(num)] for num in range(10))
+from sidegame.game import MapID
+from sidegame.utils_jit import step_bresenham, DEG_DIV_RAD
 
 
-@jit('uint8[:, :](uint8[:, :], uint8[:, :], float32)', nopython=True, nogil=True)
-def lerp2(a: np.ndarray, b: np.ndarray, x: float) -> np.ndarray:
+_Y0 = 107
+_X0_LEFT = 95
+_X0_RIGHT = 96
+_FRAME_HEIGHT = 108
+_FRAME_WIDTH = 192
+
+
+@jit('uint8[:, :](uint8[:, :], uint8[:, :], float32)', nopython=True, nogil=True, cache=True)
+def lerp2(a: ndarray, b: ndarray, x: float) -> ndarray:
     """Linear interpolation between two colour arrays by the given factor."""
 
     return (a.astype(np.float32) * x + b.astype(np.float32) * (1. - x)).astype(np.uint8)
 
 
-@jit('uint8[:, :, :](uint8[:, :, :], uint8[:, :, :], float32)', nopython=True, nogil=True)
-def lerp3(a: np.ndarray, b: np.ndarray, x: float) -> np.ndarray:
+@jit('uint8[:, :, :](uint8[:, :, :], uint8[:, :, :], float32)', nopython=True, nogil=True, cache=True)
+def lerp3(a: ndarray, b: ndarray, x: float) -> ndarray:
     """Linear interpolation between two colour images by the given factor."""
 
     return (a.astype(np.float32) * x + b.astype(np.float32) * (1. - x)).astype(np.uint8)
 
 
-@jit('boolean[:](UniTuple(int64[:], 2), UniTuple(int64, 2))', nopython=True, nogil=True)
-def get_bound_mask(indices: Tuple[np.ndarray], bounds: Tuple[int]) -> np.ndarray:
+@jit('boolean[:](UniTuple(int64[:], 2), UniTuple(int64, 2))', nopython=True, nogil=True, cache=True)
+def get_bound_mask(indices: tuple[ndarray], bounds: tuple[int]) -> ndarray:
     """Check if (2D) indices lie within specified bounds (e.g. image dimensions)."""
 
     indices_y, indices_x = indices
@@ -55,8 +46,8 @@ def get_bound_mask(indices: Tuple[np.ndarray], bounds: Tuple[int]) -> np.ndarray
     return valid_mask
 
 
-@jit('UniTuple(int64[:], 2)(UniTuple(int64[:], 2), UniTuple(int64, 2))', nopython=True, nogil=True)
-def enforce_bounds(indices: Tuple[np.ndarray], bounds: Tuple[int]) -> Tuple[np.ndarray]:
+@jit('UniTuple(int64[:], 2)(UniTuple(int64[:], 2), UniTuple(int64, 2))', nopython=True, nogil=True, cache=True)
+def enforce_bounds(indices: tuple[ndarray], bounds: tuple[int]) -> tuple[ndarray]:
     """Ensure that (2D) indices lie within specified bounds (e.g. image dimensions)."""
 
     valid_mask = get_bound_mask(indices, bounds)
@@ -66,10 +57,10 @@ def enforce_bounds(indices: Tuple[np.ndarray], bounds: Tuple[int]) -> Tuple[np.n
 
 @jit(
     (types.Array(types.uint8, 3, 'A'), types.Array(types.uint8, 3, 'A', readonly=True), types.int64, types.int64),
-    nopython=True, nogil=True)
+    nopython=True, nogil=True, cache=True)
 def draw_image(
-    canvas: np.ndarray,
-    image: np.ndarray,
+    canvas: ndarray,
+    image: ndarray,
     pos_y: int,
     pos_x: int
 ):
@@ -97,8 +88,11 @@ def draw_image(
                     canvas[p_y, p_x] = image[i_y, i_x, :3]
 
 
+# NOTE: Passing typed dict would be expensive and not beneficial here
 def draw_text(
-    canvas: np.ndarray,
+    canvas: ndarray,
+    characters: dict[str, ndarray],
+    null_char: ndarray,
     text: str,
     pos_y: int,
     pos_x: int,
@@ -115,20 +109,21 @@ def draw_text(
     spacing += 5
 
     for char in text:
-        draw_image(canvas, CHARACTERS.get(char, NULL_CHARACTER), pos_y, pos_x)
+        draw_image(canvas, characters.get(char, null_char), pos_y, pos_x)
         pos_x += spacing
 
     return pos_x
 
 
-@jit(nopython=True, nogil=True)
+@jit(nopython=True, nogil=True, cache=True)
 def draw_number(
-    canvas: np.ndarray,
+    canvas: ndarray,
+    digits: tuple[ndarray, ...],
     num: int,
     pos_y: int,
     pos_x: int,
     spacing: int = 1,
-    min_n_digits: int = 1
+    min_n_digits: int = 1,
 ):
     """
     Draw a non-negative number as a sequence of digits in leftward order.
@@ -148,7 +143,7 @@ def draw_number(
         dig = num % 10
         num = num // 10
 
-        draw_image(canvas, DIGITS[dig], pos_y, pos_x)
+        draw_image(canvas, digits[dig], pos_y, pos_x)
         n_drawn_digits += 1
 
         if num == 0 and n_drawn_digits >= min_n_digits:
@@ -159,14 +154,14 @@ def draw_number(
 
 
 def draw_colour(
-    canvas: np.ndarray,
-    cover_indices: Tuple[np.ndarray],
-    colour: np.ndarray,
+    canvas: ndarray,
+    cover_indices: tuple[ndarray],
+    colour: ndarray,
     opacity: float = 1.,
     pos_y: int = 0,
     pos_x: int = 0,
-    bounds: Tuple[int] = None,
-    background: np.ndarray = None
+    bounds: tuple[int] = None,
+    background: ndarray = None
 ):
     """Draw a cover of colour over a part of the canvas."""
 
@@ -181,23 +176,25 @@ def draw_colour(
 
     if opacity != 1.:
         canvas[cover_indices] = lerp2(colour[None], background[cover_indices], opacity)
+
     else:
         canvas[cover_indices] = colour
 
 
-def draw_overlay(canvas: np.ndarray, overlay: np.ndarray, opacity: float = 1.) -> np.ndarray:
+def draw_overlay(canvas: ndarray, overlay: ndarray, opacity: float = 1.) -> ndarray:
     """Draw a full-sized overlay over the canvas."""
 
     if opacity == 1.:
         if overlay.shape[-1] == canvas.shape[-1]:
             return overlay
+
         else:
             return np.tile(overlay, (1, 1, canvas.shape[-1]))
 
     return lerp3(overlay, canvas, opacity)
 
 
-def draw_muted(canvas: np.ndarray, opacity: float = 0.5) -> np.ndarray:
+def draw_muted(canvas: ndarray, opacity: float = 0.5) -> ndarray:
     """Convert the canvas into full or partial grayscale for a muted image effect."""
 
     overlay = cv2.cvtColor(canvas, cv2.COLOR_BGR2GRAY)[..., None]
@@ -205,7 +202,7 @@ def draw_muted(canvas: np.ndarray, opacity: float = 0.5) -> np.ndarray:
     return draw_overlay(canvas, overlay, opacity=opacity)
 
 
-def get_camera_warp(pos: Tuple[float], angle: float, viewpoint: Tuple[float], scale: float = 1.) -> np.ndarray:
+def get_camera_warp(pos: tuple[float], angle: float, viewpoint: tuple[float], scale: float = 1.) -> ndarray:
     """
     Get the matrix corresponding to the transformation of world coordinates
     into a local system.
@@ -215,7 +212,7 @@ def get_camera_warp(pos: Tuple[float], angle: float, viewpoint: Tuple[float], sc
     into its expected position as a viewpoint on the canvas.
     """
 
-    warp = cv2.getRotationMatrix2D(pos, angle*180./np.pi, scale)
+    warp = cv2.getRotationMatrix2D(pos, angle*DEG_DIV_RAD, scale)
 
     pos_x, pos_y = pos
     viewpoint_x, viewpoint_y = viewpoint
@@ -226,13 +223,13 @@ def get_camera_warp(pos: Tuple[float], angle: float, viewpoint: Tuple[float], sc
     return warp
 
 
-def get_inverse_warp(pos: Tuple[float], angle: float, viewpoint: Tuple[float], scale: float = 1.) -> np.ndarray:
+def get_inverse_warp(pos: tuple[float], angle: float, viewpoint: tuple[float], scale: float = 1.) -> ndarray:
     """
     Get the matrix corresponding to the transformation of a local system
     into world coordinates.
     """
 
-    warp = cv2.getRotationMatrix2D(viewpoint, -angle*180./np.pi, scale)
+    warp = cv2.getRotationMatrix2D(viewpoint, -angle*DEG_DIV_RAD, scale)
 
     pos_x, pos_y = pos
     viewpoint_x, viewpoint_y = viewpoint
@@ -244,14 +241,14 @@ def get_inverse_warp(pos: Tuple[float], angle: float, viewpoint: Tuple[float], s
 
 
 def project_into_view(
-    world_image: np.ndarray,
-    camera_pos: Tuple[float],
+    world_image: ndarray,
+    camera_pos: tuple[float],
     camera_angle: float,
-    camera_viewpoint: Tuple[float],
-    frame_size: Tuple[int],
+    camera_viewpoint: tuple[float],
+    frame_size: tuple[int],
     scale: float = 1.,
     preserve_values: bool = False
-) -> np.ndarray:
+) -> ndarray:
     """
     Get the matrix corresponding to the transformation of world coordinates
     into a local system and use it to get the view within a frame.
@@ -270,57 +267,149 @@ def project_into_view(
     return cv2.warpAffine(world_image, camera_warp, frame_size, flags=interp_mode)
 
 
-def get_view_endpoints(fov_deg: float, radius: float) -> Tuple[np.ndarray]:
-    """
-    Given a field of view and limited radius, get the endpoints for rays that
-    define the viewable area.
-    """
+@jit('float64[:](float64[:, :], float64[:])', nopython=True, nogil=True, cache=True)
+def warp_position(warp: ndarray, pos: ndarray) -> ndarray:
+    x, y = pos
 
-    assert fov_deg <= 180., f'Max. field of view range exceeded: {fov_deg:.2f}'
+    pos_x = warp[0, 0] * x + warp[0, 1] * y + warp[0, 2]
+    pos_y = warp[1, 0] * x + warp[1, 1] * y + warp[1, 2]
 
-    # Get endpoint image source
-    endpoint_image = cv2.imread(_ENDPOINT_PATH, cv2.IMREAD_GRAYSCALE)
-
-    # Convert FOV to radians
-    fov_rad = fov_deg * np.pi / 180.
-
-    # Mask away the endpoints below the bottom threshold determined by FOV
-    threshold_y = int(np.ceil(radius * (1. - np.cos(fov_rad/2.))))
-    endpoint_image[threshold_y:] = 0
-
-    # Split the image into left and right halves
-    left_half_image, right_half_image = np.hsplit(endpoint_image, 2)
-
-    # Get endpoints (indices)
-    left_half_idy, left_half_idx = np.nonzero(left_half_image)
-    right_half_idy, right_half_idx = np.nonzero(right_half_image)
-
-    # Correct right half indices after splitting
-    right_half_idx += endpoint_image.shape[1] // 2
-
-    return left_half_idy, left_half_idx, right_half_idy, right_half_idx
+    return np.array((pos_x, pos_y))
 
 
-def render_view(
-    world_view: np.ndarray,
-    height_map: np.ndarray,
-    entity_map: np.ndarray,
-    zone_map: np.ndarray,
-    fx_map: np.ndarray,
-    fx_ref: np.ndarray,
-    warp: np.ndarray,
-    endpoints: Tuple[np.ndarray],
-    observer_id: int = 0
-) -> np.ndarray:
+@jit('UniTuple(int64, 2)(float64[:, :], int64, int64, int64, int64)', nopython=True, nogil=True, cache=True)
+def warp_indices(warp: ndarray, x: int, y: int, dimx: int, dimy: int) -> tuple[int, int]:
+    x = float(x)
+    y = float(y)
+
+    return (
+        max(0, min(dimx, round(warp[0, 0] * x + warp[0, 1] * y + warp[0, 2]))),
+        max(0, min(dimy, round(warp[1, 0] * x + warp[1, 1] * y + warp[1, 2]))))
+
+
+@jit(
+    'uint8[:, :](int16, int64, int64, int64, int64, uint8[:, :], int16[:, :], uint8[:, :], '
+    'uint8[:, :], uint8[:, :, :], uint8[:, :, :], float64[:, :], uint8[:, :])',
+    nopython=True, nogil=True, cache=True)
+def mask_visible_line(
+    self_id: int,
+    y0: int,
+    x0: int,
+    y1: int,
+    x1: int,
+    wall_map: ndarray,
+    player_id_map: ndarray,
+    zone_map: ndarray,
+    fx_ctr_map: ndarray,
+    fx_ref: ndarray,
+    world: ndarray,
+    warp: ndarray,
+    mask: ndarray
+) -> ndarray:
+
+    wall = 0
+    player_id = 0
+    vis_level = MapID.VIS_LEVEL_FULL
+    dimy, dimx = wall_map.shape
+
+    # Init for Bresenham
+    dx = abs(x1 - x0)
+    dy = -abs(y1 - y0)
+    e = dx + dy
+    ty = y0
+    tx = x0
+    sx = 1 if x0 < x1 else -1
+    sy = 1 if y0 < y1 else -1
+
+    # Mask up to endpoint or occlusion
+    while True:
+        wx, wy = warp_indices(warp, tx, ty, dimx, dimy)
+        wall = wall_map[wy, wx]
+
+        if wall == MapID.MASK_TERRAIN_WALL:
+            if fx_ctr_map[wy, wx] > 0:
+                world[ty, tx] = fx_ref[wy, wx]
+
+            break
+
+        player_id = player_id_map[wy, wx]
+
+        if (zone_map[wy, wx] == MapID.ZONE_SMOKE) and (vis_level > MapID.VIS_LEVEL_SMOKE):
+            vis_level = MapID.VIS_LEVEL_SMOKE
+
+        elif player_id != MapID.PLAYER_ID_NULL and player_id != self_id and vis_level > MapID.VIS_LEVEL_SHADOW:
+            vis_level = MapID.VIS_LEVEL_SHADOW
+
+        mask[ty, tx] = vis_level
+
+        if vis_level > 0 and fx_ctr_map[wy, wx] > 0:
+            world[ty, tx] = fx_ref[wy, wx]
+
+        if tx == x1 and ty == y1:
+            break
+
+        tx, ty, e = step_bresenham(dx, dy, tx, ty, sx, sy, e)
+
+    return mask
+
+
+@jit(
+    'float32[:, :](int16, uint8[:, :, :], int16[:, :, :], '
+    'uint8[:, :, :], uint8[:, :, :], float64[:, :], '
+    'UniTuple(int64[:], 4))',
+    nopython=True, nogil=True, cache=True)
+def mask_view(
+    self_id: int,
+    code_map: ndarray,
+    id_map: ndarray,
+    fx_ref: ndarray,
+    world: ndarray,
+    warp: ndarray,
+    endpoints: tuple[ndarray]
+) -> ndarray:
     """
     Mask pixels that are (un)obstructed by terrain, other entities, or fog,
     within limited viewable area specified by given endpoints.
 
-    Masking is performed by ray tracing from a hard-coded position of origin
-    to each endpoint and checking terminal conditions along the way.
+    Masking is performed by casting rays from a preset starting point
+    towards all given endpoints, masking unoccluded points.
+    This is done separately for left and right parts of the view.
 
     `observer_id` is explicitly provided to prevent cases where the
     observing entity would itself block the rays from progressing outwards.
     """
 
-    return sdglib.mask_view(observer_id, height_map, entity_map, zone_map, fx_map, fx_ref, world_view, warp, *endpoints)
+    wall_map = code_map[np.int64(MapID.CHANNEL_WALL)]
+
+    if self_id == MapID.PLAYER_ID_NULL:
+        zone_map = code_map[np.int64(MapID.CHANNEL_ZONE_NULL)]
+        fx_ctr_map = code_map[np.int64(MapID.CHANNEL_ZONE_NULL)]
+        player_id_map = id_map[np.int64(MapID.CHANNEL_PLAYER_ID_NULL)]
+
+    else:
+        zone_map = code_map[np.int64(MapID.CHANNEL_ZONE)]
+        fx_ctr_map = code_map[np.int64(MapID.CHANNEL_FX)]
+        player_id_map = id_map[np.int64(MapID.CHANNEL_PLAYER_ID)]
+
+    left_ends_y, left_ends_x, right_ends_y, right_ends_x = endpoints
+
+    mask = np.zeros((_FRAME_HEIGHT, _FRAME_WIDTH), dtype=np.uint8)
+
+    for idx in range(left_ends_y.shape[0]):
+        x1 = left_ends_x[idx]
+        y1 = left_ends_y[idx]
+
+        mask = mask_visible_line(
+            self_id, _Y0, _X0_LEFT, y1, x1, wall_map, player_id_map, zone_map, fx_ctr_map, fx_ref, world, warp, mask)
+
+    for idx in range(right_ends_y.shape[0]):
+        x1 = right_ends_x[idx]
+        y1 = right_ends_y[idx]
+
+        mask = mask_visible_line(
+            self_id, _Y0, _X0_RIGHT, y1, x1, wall_map, player_id_map, zone_map, fx_ctr_map, fx_ref, world, warp, mask)
+
+    vis_level_full = np.float32(np.int64(MapID.VIS_LEVEL_FULL))
+    mask = (mask.astype(np.float32) + vis_level_full) / np.float32(2. * vis_level_full)
+
+    return mask

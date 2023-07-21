@@ -6,38 +6,14 @@ import wave
 import threading
 from typing import Deque, Dict, List, Optional, Tuple, Union
 from collections import deque
+from math import atan2, log10
 from time import sleep
 
 import pyaudio
 import numpy as np
 from scipy.signal import lfilter, butter
 
-
-class OrientedEntity:
-    """
-    An entity with attributes and methods for determining its position and angle.
-    As such, it is sufficient for audio sources and listeners, and serves
-    as a parent class for other types of entities.
-
-    Rounded position coordinates map to pixel centres, so that, for example,
-    (1., 1.) corresponds to the pixel at indices (1, 1), while lines
-    (x, 0.5), (x, 1.5), (0.5, y), and (1.5, y) represent its borders
-    and middle points to neighbouring pixels.
-
-    Coordinates are expected to increase rightwards (x) and upwards (y).
-    Using numpy 2D-array indices as discrete coordinate points,
-    the vertical (y) axis becomes inverted, basically flipping the world
-    over the x axis.
-
-    To retain consistency, this inversion is reflected in the angle definition
-    as well. That is, considering the angles of 0 or 2Pi on the horizontal right
-    and Pi or -Pi on the horizontal left, the angle must decrease when rotated
-    counter-clockwise, and increase when rotated clockwise.
-    """
-
-    def __init__(self):
-        self.pos = np.array([0., 0.])
-        self.angle = 0.
+from sidegame.physics import OrientedEntity
 
 
 class OrientedSound:
@@ -55,7 +31,10 @@ class OrientedSound:
     def get_distance(self) -> float:
         """Get the relative distance between the listener and the source."""
 
-        return np.linalg.norm(self.listener.pos - self.source.pos)
+        diff = self.listener.pos - self.source.pos
+        dist = (diff[0]**2 + diff[1]**2) ** 0.5
+
+        return dist
 
     def get_angle(self) -> Union[float, None]:
         """
@@ -67,11 +46,11 @@ class OrientedSound:
             return None
 
         relative_x, relative_y = self.source.pos - self.listener.pos
-        source_angle = np.arctan2(relative_y, relative_x)
+        source_angle = atan2(relative_y, relative_x)
 
         # Negated, because HRIR angle keys are not adapted for y-axis inversion
         # (see the docstring for `OrientedEntity`)
-        relative_angle = -(source_angle - self.listener.angle)
+        relative_angle = self.listener.angle - source_angle
 
         return relative_angle
 
@@ -192,7 +171,8 @@ class PlanarAudioSystem:
     _MIN_SOUND_VAL = -2.**(_SAMPLE_WIDTH*8-1)
     _MAX_SOUND_VAL = 2.**(_SAMPLE_WIDTH*8-1) - 1.
 
-    _DEG_TO_RAD_FACTOR = 180./np.pi
+    _DEG_DIV_RAD = 180./np.pi
+    _PADDING = ((0, 0), (127, 128))
 
     def __init__(
         self,
@@ -369,9 +349,9 @@ class PlanarAudioSystem:
         """Convolve sound with a pair of HRIR filters corresponding to the given angle."""
 
         if angle is None:
-            return np.pad(sound, ((0, 0), (127, 128)))
+            return np.pad(sound, self._PADDING)
 
-        angle *= self._DEG_TO_RAD_FACTOR
+        angle *= self._DEG_DIV_RAD
 
         if angle < 0.:
             angle += 360.
@@ -436,7 +416,7 @@ def get_mel_basis(sampling_rate: int = 44100, n_fft: int = 2048, n_mel: int = 64
     """
 
     min_mel_freq = 0.
-    max_mel_freq = 2595. * np.log10(1. + (sampling_rate/2.) / 700.)
+    max_mel_freq = 2595. * log10(1. + (sampling_rate/2.) / 700.)
 
     mel_freqs = np.linspace(min_mel_freq, max_mel_freq, n_mel + 2)
     hz_freqs = 700. * (10. ** (mel_freqs / 2595.) - 1.)
@@ -497,6 +477,6 @@ def spectrify(
     power_spectrum = 10.*np.log10(np.maximum(power_spectrum, eps))
 
     if ref is not None:
-        power_spectrum = np.maximum(power_spectrum - 10.*np.log10(ref), 10.*np.log10(eps))
+        power_spectrum = np.maximum(power_spectrum - 10.*log10(ref), 10.*log10(eps))
 
     return power_spectrum.T

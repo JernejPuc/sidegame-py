@@ -11,11 +11,13 @@ import numpy as np
 import cv2
 import psutil
 
-from sidegame.assets import ImageBank, Map, ASSET_DIR
+from sidegame.utils_jit import vec2_norm2
+from sidegame.assets import ImageBank, MapID, ASSET_DIR
 from sidegame.graphics import draw_image
 from sidegame.networking.core import Recorder
-from sidegame.game import GameID
-from sidegame.game.shared import Event, Player, Session
+from sidegame.physics import get_position_indices
+from sidegame.game import GameID, EventID
+from sidegame.game.shared import Player, Session
 from sidegame.game.client.simulation import Simulation
 
 
@@ -274,10 +276,10 @@ class StatTracker:
         self.last_timestamp = timestamp
 
         if self.session.phase != GameID.PHASE_BUY and self.own_player.health:
-            self.tracked_heatmap[self.own_player.get_position_indices(self.own_player.pos / 10.)] += dt
+            self.tracked_heatmap[get_position_indices(self.own_player.pos / 10.)] += dt
             self.tracked_scores['game_time'] += dt
 
-            self.tracked_scores['distance'] += np.linalg.norm(pos - self.last_pos) if self.last_pos is not None else 0.
+            self.tracked_scores['distance'] += vec2_norm2(pos - self.last_pos) if self.last_pos is not None else 0.
             self.last_pos = pos
 
     def update_from_event(self, event_src: int, event_id: int, event_data: List[Union[int, float]], timestamp: float):
@@ -287,7 +289,7 @@ class StatTracker:
             return
 
         # Messaging
-        elif event_src != Map.PLAYER_ID_NULL:
+        elif event_src != MapID.PLAYER_ID_NULL:
             sender_position_id = event_data[-1]
 
             if sender_position_id == self.own_player.position_id:
@@ -296,7 +298,7 @@ class StatTracker:
             return
 
         # Money spent on self-assignment
-        if event_id == Event.OBJECT_ASSIGN:
+        if event_id == EventID.OBJECT_ASSIGN:
             assignee_id = int(event_data[0])
             obj_item_id = event_data[-2]
 
@@ -309,7 +311,7 @@ class StatTracker:
                 self.tracked_item_buys[item.id] += 1
 
         # Flags for objective success rate
-        elif event_id == Event.C4_PLANTED and self.session.phase == GameID.PHASE_PLANT:
+        elif event_id == EventID.C4_PLANTED and self.session.phase == GameID.PHASE_PLANT:
             planter_id = int(event_data[0])
 
             if planter_id in self.session.groups[self.own_player.team]:
@@ -322,7 +324,7 @@ class StatTracker:
             else:
                 self.temp_scores['enemies_planted'] = 1
 
-        elif event_id == Event.C4_DEFUSED:
+        elif event_id == EventID.C4_DEFUSED:
             defuser_id = int(event_data[1])
 
             # Flag for RWS
@@ -333,7 +335,7 @@ class StatTracker:
                     self.temp_scores['defused'] = 1
                     self.tracked_scores['defuses'] += 1
 
-        elif event_id == Event.PLAYER_DAMAGE:
+        elif event_id == EventID.PLAYER_DAMAGE:
             attacker_id = int(event_data[0])
             victim_id = int(event_data[1])
             damage = event_data[2]
@@ -357,21 +359,21 @@ class StatTracker:
                         self.temp_player_damage[victim.position_id] += damage
                         self.temp_last_contact_time[victim.position_id] = timestamp
 
-        elif event_id == Event.FX_ATTACK:
+        elif event_id == EventID.FX_ATTACK:
             attacker_id = int(event_data[0])
             item_id = event_data[-2]
 
             if attacker_id == self.own_player.id:
                 self.tracked_item_uses[item_id] += 1
 
-        elif event_id == Event.FX_FOOTSTEP:
+        elif event_id == EventID.FX_FOOTSTEP:
             player_id = int(event_data[0])
 
             if player_id == self.own_player.id:
                 self.tracked_scores['footsteps'] += 1
 
         # Keep track of flash assists, count debuff as flash damage
-        elif event_id == Event.FX_FLASH and self.session.phase != GameID.PHASE_RESET:
+        elif event_id == EventID.FX_FLASH and self.session.phase != GameID.PHASE_RESET:
             attacker_id = int(event_data[0])
             victim_id = int(event_data[1])
             debuff = event_data[2]
@@ -387,7 +389,7 @@ class StatTracker:
                 else:
                     self.tracked_item_damage[GameID.ITEM_FLASH] += debuff
 
-        elif event_id == Event.PLAYER_DEATH:
+        elif event_id == EventID.PLAYER_DEATH:
             attacker_id = int(event_data[0])
             victim_id = int(event_data[1])
 
@@ -458,7 +460,7 @@ class StatTracker:
                 self.tracked_scores['deaths'] += 1
 
         # NOTE: Only considers phases that preceded round win, i.e. excluding reset phase
-        elif event_id == Event.CTRL_MATCH_PHASE_CHANGED:
+        elif event_id == EventID.CTRL_MATCH_PHASE_CHANGED:
             new_phase = int(event_data[6])
 
             if new_phase == GameID.PHASE_RESET:

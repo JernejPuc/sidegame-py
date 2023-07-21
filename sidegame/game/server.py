@@ -2,14 +2,20 @@
 
 import struct
 from argparse import Namespace
-from collections import deque
-from typing import Any, Deque, Dict, Iterable, List, Tuple, Union
+from typing import Any, Dict, Iterable, List, Tuple, Union
 from numpy.random import default_rng
 
-from sidegame.assets import Map
-from sidegame.networking import Entry, Action, Entity, Server
-from sidegame.game import GameID
-from sidegame.game.shared import Event, Message, Inventory, Object, C4, Player, Session
+from sidegame.networking import Entry, Action, Event, Entity, Server
+from sidegame.game import GameID, EventID, MapID
+from sidegame.game.shared import Message, Inventory, Object, C4, Player, Session
+
+
+ID_EVENTS: tuple[int] = (
+    EventID.CTRL_PLAYER_DISCONNECTED, EventID.OBJECT_EXPIRE, EventID.OBJECT_TRIGGER,
+    EventID.C4_DETONATED, EventID.FX_C4_TOUCHED, EventID.FX_C4_INIT,
+    EventID.FX_C4_KEY_PRESS, EventID.FX_C4_BEEP, EventID.FX_C4_BEEP_DEFUSING, EventID.FX_C4_NVG,
+    EventID.FX_CLIP_LOW, EventID.FX_CLIP_EMPTY, EventID.FX_FOOTSTEP,
+    EventID.FX_BOUNCE, EventID.FX_LAND, EventID.FX_EXTINGUISH)
 
 
 class SDGServer(Server):
@@ -18,7 +24,7 @@ class SDGServer(Server):
     CLIENT_MESSAGE_SIZE = 32
     SERVER_MESSAGE_SIZE = 64
     MAX_TIME_TO_ASSEMBLE = 20.
-    ENV_ID = Map.PLAYER_ID_NULL
+    ENV_ID = MapID.PLAYER_ID_NULL
 
     def __init__(self, args: Namespace, assigned_teams: Dict[str, int] = None, ip_config: dict[str, list[str]] = None):
         self.rng = default_rng(args.seed)
@@ -47,7 +53,7 @@ class SDGServer(Server):
 
         self.session = Session(rng=self.rng)
         self.inventory = Inventory()
-        self.gathered_data_cache: Deque[Entry] = deque()
+        self.gathered_data_cache: list[Entry] = []
 
         self.bot_counter = 0
 
@@ -74,7 +80,7 @@ class SDGServer(Server):
         return Player(entity_id, self.inventory, rng=self.rng)
 
     def handle_missing_entities(self, missing_entity_ids: List[int]) -> Iterable[Tuple[int, Any]]:
-        removal_logs = deque()
+        removal_logs = []
 
         for entity_id in missing_entity_ids:
             # Remove from session
@@ -83,11 +89,12 @@ class SDGServer(Server):
                 self.session.remove_player(player)
 
                 if self.session.map is not None:
-                    self.session.map.player_id[player.get_covered_indices()] = Map.PLAYER_ID_NULL
+                    self.session.map.player_id[player.get_covered_indices()] = MapID.PLAYER_ID_NULL
 
                 # Generate disconnection log for clients
                 data = [
-                    float(entity_id), 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0, 0, Event.CTRL_PLAYER_DISCONNECTED]
+                    float(entity_id), 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0, 0,
+                    EventID.CTRL_PLAYER_DISCONNECTED]
 
                 # NOTE: These logs bypass queued events
                 # (because they are handled after send, after queued events have already been logged)
@@ -185,8 +192,8 @@ class SDGServer(Server):
             return max(vals, key=vals.count) if vals else GameID.NULL
 
         elif idx == 14:
-            vals = [val for val in vals if val != Map.PLAYER_ID_NULL]
-            return max(vals, key=vals.count) if vals else Map.PLAYER_ID_NULL
+            vals = [val for val in vals if val != MapID.PLAYER_ID_NULL]
+            return max(vals, key=vals.count) if vals else MapID.PLAYER_ID_NULL
 
         # Accumulated differences are simply added together
         else:
@@ -267,7 +274,7 @@ class SDGServer(Server):
         if player.id not in session.players:
             session.add_player(player)
 
-            return [Event(Event.CTRL_PLAYER_CONNECTED, (
+            return [Event(EventID.CTRL_PLAYER_CONNECTED, (
                 session.time, session.total_round_time, session.total_match_time, player.id, player.name))]
 
         # Only active players, i.e. not spectators or killed players, have their update called
@@ -279,18 +286,19 @@ class SDGServer(Server):
         grounded = session.phase == GameID.PHASE_BUY
 
         return player.update(
-            action, session.players, session.objects, session.map, timestamp, lag+lerp, grounded, self.time_scale)
+            action, session.players, session.objects, session.c4, session.map,
+            timestamp, lag+lerp, grounded, self.time_scale)
 
     def update_state(
         self,
         dt: float,
         timestamp: float,
-        queued_logs: Deque[Action],
-        queued_events: Deque[Event]
-    ) -> Iterable[Tuple[int, Any]]:
+        queued_logs: list[Action],
+        queued_events: list[Event]
+    ) -> Iterable[tuple[int, Any]]:
 
         # Default session control flag
-        flag = Session.FLAG_NULL
+        flag = GameID.NULL
 
         # Self-start or self-termination
         if self.auto and not self.session.phase:
@@ -311,7 +319,7 @@ class SDGServer(Server):
                 # the server's socket unreachable to clients, possibly before they receive the signal,
                 # causing a 'Lost connection to the server' message instead of the expected exit
                 # (despite the socket being UDP; see the docstring of `networking.core::ServerSocket.recv`)
-                queued_events.append(Event(Event.CTRL_SESSION_ENDED, None))
+                queued_events.append(Event(EventID.CTRL_SESSION_ENDED, None))
 
             # Attempt self-start
             elif len(self.session.players) >= len(self.assigned_teams):
@@ -323,7 +331,7 @@ class SDGServer(Server):
 
                 # Match is started if all named players are present
                 if len(assigned_teams) == len(self.assigned_teams):
-                    flag = Session.FLAG_START_MATCH
+                    flag = GameID.CMD_START_MATCH
                     self.session.assigned_teams = assigned_teams
 
         # Handle commands/update global history (use queued action logs to add actual logs)
@@ -332,19 +340,19 @@ class SDGServer(Server):
 
             # Check for session control flags, otherwise add to standard game events
             if event is not None:
-                if event.type == Event.CTRL_MATCH_STARTED:
-                    flag = Session.FLAG_START_MATCH
+                if event.type == EventID.CTRL_MATCH_STARTED:
+                    flag = GameID.CMD_START_MATCH
 
-                elif event.type == Event.CTRL_MATCH_ENDED:
-                    flag = Session.FLAG_END_MATCH
+                elif event.type == EventID.CTRL_MATCH_ENDED:
+                    flag = GameID.CMD_END_MATCH
 
                 # TODO: Temporary fix to update clientside money display
-                elif event.type == Event.OBJECT_SPAWN and log.data[1] == GameID.LOG_BUY:
+                elif event.type == EventID.OBJECT_SPAWN and log.data[1] == GameID.LOG_BUY:
                     queued_events.append(event)
 
                     obj = event.data
                     queued_events.append(Event(
-                        Event.OBJECT_ASSIGN,
+                        EventID.OBJECT_ASSIGN,
                         (obj.owner.id, obj.item.id, 0., 0, 0, 0, obj.owner.money, obj.item.price)))
 
                 else:
@@ -424,46 +432,46 @@ class SDGServer(Server):
 
             msg = Message(sender_position_id, msg_round, msg_time, words, marks=marks, sender_id=player_id)
 
-            return Event(Event.PLAYER_MESSAGE, msg)
+            return Event(EventID.PLAYER_MESSAGE, msg)
 
         elif log_id == GameID.CMD_GET_LATENCY:
             latencies = [
                 (a_player.id, int(min(a_player.latency * 1000., 255.)))
                 for a_player in self.session.players.values() if a_player.team != GameID.GROUP_SPECTATORS][:10]
 
-            return Event(Event.CTRL_LATENCY_REQUESTED, (player_id, latencies))
+            return Event(EventID.CTRL_LATENCY_REQUESTED, (player_id, latencies))
 
         elif user_role < GameID.ROLE_ADMIN:
             return None
 
         # Admin/dev elevated commands
         if log_id == GameID.CMD_START_MATCH:
-            return Event(Event.CTRL_MATCH_STARTED, None)
+            return Event(EventID.CTRL_MATCH_STARTED, None)
 
         elif log_id == GameID.CMD_END_MATCH:
-            return Event(Event.CTRL_MATCH_ENDED, None)
+            return Event(EventID.CTRL_MATCH_ENDED, None)
 
         elif log_id == GameID.CMD_END_SESSION:
             self.session_running = False
-            return Event(Event.CTRL_SESSION_ENDED, None)
+            return Event(EventID.CTRL_SESSION_ENDED, None)
 
         elif log_id == GameID.CHEAT_END_ROUND:
             # Runs down the timer in the buy or planting phase
             if self.session.phase == GameID.PHASE_BUY:
-                self.session.time = Session.TIME_TO_BUY
+                self.session.time = self.session.TIME_TO_BUY
 
             elif self.session.phase == GameID.PHASE_PLANT:
-                self.session.time = Session.TIME_TO_PLANT
+                self.session.time = self.session.TIME_TO_PLANT
 
         elif log_id == GameID.CHEAT_DEV_MODE:
             player: Player = self.entities[player_id]
             player.dev_mode = not player.dev_mode
-            return Event(Event.CTRL_PLAYER_CHANGED, (player_id, player.name, player.money, player.dev_mode))
+            return Event(EventID.CTRL_PLAYER_CHANGED, (player_id, player.name, player.money, player.dev_mode))
 
         elif log_id == GameID.CHEAT_MAX_MONEY:
             player: Player = self.entities[player_id]
             player.money = Player.MONEY_CAP
-            return Event(Event.CTRL_PLAYER_CHANGED, (player_id, player.name, player.money, player.dev_mode))
+            return Event(EventID.CTRL_PLAYER_CHANGED, (player_id, player.name, player.money, player.dev_mode))
 
         elif log_id == GameID.CMD_ADD_BOT:
             if self.bot_counter == 256:
@@ -485,7 +493,7 @@ class SDGServer(Server):
 
             self.logger.info('Client %d connected (bot %d).', client_id, bot_counter)
 
-            return Event(Event.CTRL_PLAYER_CONNECTED, (
+            return Event(EventID.CTRL_PLAYER_CONNECTED, (
                 self.session.time, self.session.total_round_time, self.session.total_match_time, bot.id, bot.name))
 
         elif log_id == GameID.CMD_KICK_NAME:
@@ -506,7 +514,7 @@ class SDGServer(Server):
                 self.session.remove_player(kicked_player)
 
                 if self.session.map is not None:
-                    self.session.map.player_id[kicked_player.get_covered_indices()] = Map.PLAYER_ID_NULL
+                    self.session.map.player_id[kicked_player.get_covered_indices()] = MapID.PLAYER_ID_NULL
 
             if kicked_id in self.entities:
                 del self.entities[kicked_id]
@@ -523,7 +531,7 @@ class SDGServer(Server):
             else:
                 self.bot_counter -= 1
 
-            return Event(Event.CTRL_PLAYER_DISCONNECTED, kicked_id)
+            return Event(EventID.CTRL_PLAYER_DISCONNECTED, kicked_id)
 
         return None
 
@@ -535,15 +543,15 @@ class SDGServer(Server):
 
         event_type = event.type
 
-        if event_type == Event.CTRL_MATCH_STARTED:
+        if event_type == EventID.CTRL_MATCH_STARTED:
             map_id = event.data
             data = [0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0, map_id, event_type]
 
-        elif event_type == Event.CTRL_MATCH_ENDED:
+        elif event_type == EventID.CTRL_MATCH_ENDED:
             time, phase, rounds_won_t, rounds_won_ct = event.data
             data = [time, float(phase), 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., rounds_won_t, rounds_won_ct, event_type]
 
-        elif event_type == Event.CTRL_MATCH_PHASE_CHANGED:
+        elif event_type == EventID.CTRL_MATCH_PHASE_CHANGED:
             t_win, penalise_alive_ts, win_reward, loss_streak_t, loss_streak_ct, \
                 time, phase, rounds_won_t, rounds_won_ct = event.data
 
@@ -552,10 +560,10 @@ class SDGServer(Server):
                 float(loss_streak_t), float(loss_streak_ct),
                 time, float(phase), 0., 0., 0., 0., 0., rounds_won_t, rounds_won_ct, event_type]
 
-        elif event_type == Event.CTRL_SESSION_ENDED:
+        elif event_type == EventID.CTRL_SESSION_ENDED:
             data = [0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0, 0, event_type]
 
-        elif event_type == Event.CTRL_PLAYER_CONNECTED:
+        elif event_type == EventID.CTRL_PLAYER_CONNECTED:
             phase_time, round_time, match_time, player_id, name = event.data
 
             data = [
@@ -563,16 +571,16 @@ class SDGServer(Server):
                 float(ord(name[0])), float(ord(name[1])), float(ord(name[2])), float(ord(name[3])),
                 0., 0., 0., 0., 0, 0, event_type]
 
-        elif event_type == Event.CTRL_PLAYER_DISCONNECTED:
+        elif event_type == EventID.CTRL_PLAYER_DISCONNECTED:
             entity_id = event.data
 
             data = [float(entity_id), 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0, 0, event_type]
 
-        elif event_type == Event.CTRL_PLAYER_MOVED:
+        elif event_type == EventID.CTRL_PLAYER_MOVED:
             player_id, team, position_id = event.data
             data = [float(player_id), 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., team, position_id, event_type]
 
-        elif event_type == Event.CTRL_PLAYER_CHANGED:
+        elif event_type == EventID.CTRL_PLAYER_CHANGED:
             player_id, name, money, dev_mode = event.data
 
             data = [
@@ -580,7 +588,7 @@ class SDGServer(Server):
                 float(ord(name[0])), float(ord(name[1])), float(ord(name[2])), float(ord(name[3])),
                 float(money), float(dev_mode), 0., 0., 0., 0., 0., 0, 0, event_type]
 
-        elif event_type == Event.CTRL_LATENCY_REQUESTED:
+        elif event_type == EventID.CTRL_LATENCY_REQUESTED:
             requestor_id, latencies = event.data
 
             data = [0., 0., 0., 0., 0., 0., 0., 0., 0., 0., float(requestor_id), 0., 0, len(latencies), event_type]
@@ -588,68 +596,68 @@ class SDGServer(Server):
             for i, (a_player_id, a_player_latency) in enumerate(latencies):
                 data[i] = struct.unpack('>f', struct.pack('>4B', a_player_id, a_player_latency, 0, 0))[0]
 
-        elif event_type == Event.OBJECT_SPAWN:
+        elif event_type == EventID.OBJECT_SPAWN:
             obj: Object = event.data
             data = [
                 float(obj.id), float(obj.owner.id), obj.lifetime,
                 0., 0., 0., 0., 0., 0., 0., 0., 0., 0, obj.item.id, event_type]
 
-        elif event_type == Event.OBJECT_ASSIGN:
+        elif event_type == EventID.OBJECT_ASSIGN:
             obj_owner_id, obj_item_id, durability, magazine, reserve, carrying, money, spending = event.data
             data = [
                 float(obj_owner_id),
                 durability, float(magazine), float(reserve), float(carrying),
                 float(money), float(spending), 0., 0., 0., 0., 0., 0, obj_item_id, event_type]
 
-        elif event_type == Event.C4_PLANTED:
+        elif event_type == EventID.C4_PLANTED:
             obj: C4 = event.data
             data = [float(obj.owner.id), 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0, 0, event_type]
 
-        elif event_type == Event.C4_DEFUSED:
+        elif event_type == EventID.C4_DEFUSED:
             obj: C4 = event.data
             data = [float(obj.id), float(obj.defused_by), 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0, 0, event_type]
 
-        elif event_type in Event.ID_EVENTS:
+        elif event_type in ID_EVENTS:
             entity_id = event.data
             data = [float(entity_id), 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0, 0, event_type]
 
-        elif event_type == Event.FX_ATTACK:
+        elif event_type == EventID.FX_ATTACK:
             attacker_id, item_id = event.data
             data = [float(attacker_id), 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0, item_id, event_type]
 
-        elif event_type == Event.FX_FLASH:
+        elif event_type == EventID.FX_FLASH:
             attacker_id, flashed_id, debuff, duration = event.data
 
             data = [
                 float(attacker_id), float(flashed_id), debuff, duration,
                 0., 0., 0., 0., 0., 0., 0., 0., 0, 0, event_type]
 
-        elif event_type == Event.FX_WALL_HIT:
+        elif event_type == EventID.FX_WALL_HIT:
             (pos_x, pos_y), attacker_id, item_id = event.data
             data = [pos_x, pos_y, float(attacker_id), 0., 0., 0., 0., 0., 0., 0., 0., 0., 0, item_id, event_type]
 
-        elif event_type == Event.PLAYER_RELOAD:
+        elif event_type == EventID.PLAYER_RELOAD:
             reloader_id, rld_evtype, rld_item_id = event.data
             data = [float(reloader_id), 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., rld_evtype, rld_item_id, event_type]
 
-        elif event_type == Event.PLAYER_DAMAGE:
+        elif event_type == EventID.PLAYER_DAMAGE:
             attacker_id, damaged_id, item_id, damage = event.data
 
             data = [
                 float(attacker_id), float(damaged_id), damage,
                 0., 0., 0., 0., 0., 0., 0., 0., 0., 0, item_id, event_type]
 
-        elif event_type == Event.PLAYER_DEATH:
+        elif event_type == EventID.PLAYER_DEATH:
             attacker_id, damaged_id, item_id, excess = event.data
             data = [
                 float(attacker_id), float(damaged_id), excess,
                 0., 0., 0., 0., 0., 0., 0., 0., 0., 0, item_id, event_type]
 
-        elif event_type == Event.PLAYER_MESSAGE:
+        elif event_type == EventID.PLAYER_MESSAGE:
             msg: Message = event.data
 
             data = [
-                *(float(coord) for coord in sum(msg.marks, tuple())),
+                *(float(coord) for coord in sum(msg.marks, ())),
                 msg.time, float(msg.words[0]), float(msg.words[1]),
                 float(msg.words[2]), msg.words[3], msg.round, msg.position_id]
 

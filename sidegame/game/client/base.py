@@ -5,14 +5,16 @@ import struct
 import random
 from typing import Iterable, List, Tuple, Union
 
+from numpy import ndarray
 from numpy.random import default_rng
+from numba import jit
 
-from sidegame.assets import Map
-from sidegame.physics import fix_angle_range, update_collider_map, F_PI, F_2PI
+from sidegame.utils_jit import vec2_lerp_, angle_lerp, get_disk_indices
+from sidegame.physics import update_collider_map
 from sidegame.effects import Colour, Mark, Explosion, Flame, Fog, Gunfire, Decal, Residual
-from sidegame.networking import Entry, Action, Entity, LiveClient
-from sidegame.game import GameID
-from sidegame.game.shared import Event, Message, Item, Object, Weapon, Incendiary, Smoke, Player, Session
+from sidegame.networking import Entry, Action, Event, Entity, LiveClient
+from sidegame.game import GameID, EventID, MapID
+from sidegame.game.shared import Message, Item, Object, Weapon, Incendiary, Smoke, Player, Session
 from sidegame.game.client.simulation import Simulation
 from sidegame.game.client.tracking import StatTracker
 
@@ -26,7 +28,7 @@ class SDGLiveClientBase(LiveClient):
 
     CLIENT_MESSAGE_SIZE = 32
     SERVER_MESSAGE_SIZE = 64
-    ENV_ID = Map.PLAYER_ID_NULL
+    ENV_ID = MapID.PLAYER_ID_NULL
 
     def __init__(self, args: Namespace):
         self.mmr = args.mmr
@@ -93,7 +95,8 @@ class SDGLiveClientBase(LiveClient):
 
         if player.team != GameID.GROUP_SPECTATORS and player.health:
             update_collider_map(
-                player.covered_indices, self.session.map.player_id, old_pos, player.pos, player.id, Map.PLAYER_ID_NULL)
+                player.covered_indices, self.session.map.player_id, old_pos, player.pos,
+                player.id, MapID.PLAYER_ID_NULL)
 
         if self.stats is not None:
             self.stats.update_from_state(
@@ -151,22 +154,20 @@ class SDGLiveClientBase(LiveClient):
 
         # Handle game (env.) event
         if event_entry.id == self.ENV_ID:
-            if event_id == Event.CTRL_MATCH_STARTED:
-                map_id = event_data[-2]
-
+            if event_id == EventID.CTRL_MATCH_STARTED:
                 self.remove_object_entities()
-                session.start_match(map_id=map_id, assign_c4=False)
+                session.start_match(assign_c4=False)
 
                 # NOTE: Spectators must enter manually (ESC), because it was a bit annoying when connecting mid-game
                 if session.is_player(sim.own_player_id):
                     sim.enter_world()
 
-            elif event_id == Event.CTRL_MATCH_ENDED:
+            elif event_id == EventID.CTRL_MATCH_ENDED:
                 _, _, session.rounds_won_t, session.rounds_won_ct = event_data[-5:-1]
                 session.stop_match()
                 sim.exit_world()
 
-            elif event_id == Event.CTRL_MATCH_PHASE_CHANGED:
+            elif event_id == EventID.CTRL_MATCH_PHASE_CHANGED:
                 old_phase = session.phase
                 new_phase = int(event_data[6])
 
@@ -188,7 +189,7 @@ class SDGLiveClientBase(LiveClient):
                     losing_team = GameID.GROUP_TEAM_CT if t_win else GameID.GROUP_TEAM_T
 
                     sim.add_chat_entry(Message(
-                        GameID.NULL,
+                        GameID.GROUP_SPECTATORS,
                         session.rounds_won_t + session.rounds_won_ct,
                         session.total_round_time,
                         [winning_team, GameID.TERM_KILL, losing_team, GameID.TERM_STOP]))
@@ -196,8 +197,7 @@ class SDGLiveClientBase(LiveClient):
                 # Reset side and/or round
                 elif old_phase == GameID.PHASE_RESET and new_phase == GameID.PHASE_BUY:
                     self.remove_object_entities()
-                    sim.effects.clear()
-                    sim.fx_map.fill(0)
+                    sim.clear_effects()
 
                     # Switch back to own player if viewing others when dead
                     if session.is_dead_player(sim.own_player_id):
@@ -236,13 +236,13 @@ class SDGLiveClientBase(LiveClient):
                 session.rounds_won_ct = event_data[-2]
 
             # Break client loop
-            elif event_id == Event.CTRL_SESSION_ENDED:
+            elif event_id == EventID.CTRL_SESSION_ENDED:
                 self.session_running = False
 
             # Handle player appeareance by adding them to the associated group
             # NOTE: If the player has disconnected later, the initial connection will still be acknowledged
             # to properly replay the events up to their disconnection
-            elif event_id == Event.CTRL_PLAYER_CONNECTED:
+            elif event_id == EventID.CTRL_PLAYER_CONNECTED:
                 player_id = int(event_data[3])
                 name = ''.join(chr(int(ordinal)) for ordinal in event_data[4:8])
 
@@ -263,13 +263,13 @@ class SDGLiveClientBase(LiveClient):
                     session.total_match_time = match_time
 
             # Handle player disappearance by removing them from the associated group
-            elif event_id == Event.CTRL_PLAYER_DISCONNECTED:
+            elif event_id == EventID.CTRL_PLAYER_DISCONNECTED:
                 player_id = int(event_data[0])
 
                 dc_player: Player = self.entities[player_id]
 
                 if session.phase:
-                    session.map.player_id[dc_player.get_covered_indices()] = Map.PLAYER_ID_NULL
+                    session.map.player_id[dc_player.get_covered_indices()] = MapID.PLAYER_ID_NULL
 
                 session.remove_player(dc_player)
                 del self.entities[player_id]
@@ -279,7 +279,7 @@ class SDGLiveClientBase(LiveClient):
                     sim.change_observed_player()
 
             # Handle team (re)assignment
-            elif event_id == Event.CTRL_PLAYER_MOVED:
+            elif event_id == EventID.CTRL_PLAYER_MOVED:
                 player_id = int(event_data[0])
                 team = event_data[-3]
                 position_id = event_data[-2]
@@ -301,7 +301,7 @@ class SDGLiveClientBase(LiveClient):
                 assert position_id == session.players[player_id].position_id
 
             # Handle renaming, cheats, etc.
-            elif event_id == Event.CTRL_PLAYER_CHANGED:
+            elif event_id == EventID.CTRL_PLAYER_CHANGED:
                 player_id = int(event_data[0])
                 name = ''.join(chr(int(ordinal)) for ordinal in event_data[1:5])
                 money = int(event_data[5])
@@ -312,7 +312,7 @@ class SDGLiveClientBase(LiveClient):
                 player.money = money
                 player.dev_mode = dev_mode
 
-            elif event_id == Event.CTRL_LATENCY_REQUESTED:
+            elif event_id == EventID.CTRL_LATENCY_REQUESTED:
                 requestor_id = event_data[10]
 
                 if sim.own_player_id == requestor_id:
@@ -327,7 +327,7 @@ class SDGLiveClientBase(LiveClient):
                     print(print_string)
 
             # Handle object spawning as interpolated entities
-            elif event_id == Event.OBJECT_SPAWN:
+            elif event_id == EventID.OBJECT_SPAWN:
                 obj_id = int(event_data[0])
                 obj_owner_id = int(event_data[1])
                 obj_lifetime = event_data[2]
@@ -337,7 +337,7 @@ class SDGLiveClientBase(LiveClient):
                 owner = session.players.get(obj_owner_id, None)
 
                 if owner is None:
-                    owner = Player(Map.PLAYER_ID_NULL, sim.inventory, rng=self.rng)
+                    owner = Player(MapID.PLAYER_ID_NULL, sim.inventory, rng=self.rng)
 
                 # NOTE: Incendiary/smoke need cover update methods, so replacing placeholders is not enough
                 # Their lifetime also needs to be overridden to allow dropped objects to be hovered
@@ -361,21 +361,21 @@ class SDGLiveClientBase(LiveClient):
                 session.objects[obj_id] = obj
 
             # Interpolated object expiry is akin to entity "disconnection"
-            elif event_id == Event.OBJECT_EXPIRE:
+            elif event_id == EventID.OBJECT_EXPIRE:
                 obj_id = int(event_data[0])
                 obj = session.objects[obj_id]
 
-                session.map.object_id[obj.get_position_indices(obj.pos)] = Map.OBJECT_ID_NULL
+                session.map.object_id[obj.get_position_indices()] = MapID.OBJECT_ID_NULL
 
                 # NOTE: Due to `accept_experienced_fx`, cover indices can remain unset up to this point
                 if Item.SUBSLOT_INCENDIARY <= obj.item.subslot <= Item.SUBSLOT_SMOKE and obj.cover_indices is not None:
-                    obj.clear_zone_cover(session.map.zone, session.map.zone_id)
+                    obj.clear_zone_cover(session.map)
 
                 del session.objects[obj_id]
                 del self.entities[obj_id]
 
             # Add carried object, remove it, or (re)set its values
-            elif event_id == Event.OBJECT_ASSIGN:
+            elif event_id == EventID.OBJECT_ASSIGN:
                 obj_owner_id = int(event_data[0])
                 obj_item_id = event_data[-2]
 
@@ -405,7 +405,7 @@ class SDGLiveClientBase(LiveClient):
                 if accept_experienced_fx:
                     queue_sound(sim.sounds['get' if carrying else 'drop'], observed_player, player)
 
-            elif event_id == Event.OBJECT_TRIGGER and accept_experienced_fx:
+            elif event_id == EventID.OBJECT_TRIGGER and accept_experienced_fx:
                 obj_id = int(event_data[0])
 
                 # SFX
@@ -427,25 +427,25 @@ class SDGLiveClientBase(LiveClient):
                 elif item_id == GameID.ITEM_SMOKE:
                     vfx = Fog((0, 0), source.item.radius, source.item.duration)
 
-                    source.set_zone_cover(session.map.wall, session.map.zone, session.map.zone_id)
+                    source.set_zone_cover(session.map)
                     vfx.world_indices = vfx.cover_indices = source.cover_indices
 
                 else:
                     vfx = Flame((0, 0), source.item.radius, source.item.duration)
 
-                    source.set_zone_cover(session.map.wall, session.map.zone, session.map.zone_id)
+                    source.set_zone_cover(session.map)
                     vfx.world_indices = vfx.cover_indices = source.cover_indices
 
                 sim.add_effect(vfx)
 
-            elif event_id == Event.C4_DETONATED and accept_announced_fx:
+            elif event_id == EventID.C4_DETONATED and accept_announced_fx:
                 obj_id = int(event_data[0])
                 source = session.objects[obj_id]
 
                 queue_sound(inventory.c4.sounds['explode'], observed_player, source)
                 sim.add_effect(Explosion(source.pos, source.item.radius/2., 3.))
 
-            elif event_id == Event.C4_PLANTED:
+            elif event_id == EventID.C4_PLANTED:
                 planter_id = int(event_data[0])
 
                 planter: Player = session.players[planter_id]
@@ -461,12 +461,12 @@ class SDGLiveClientBase(LiveClient):
 
                 # Add chat entry
                 sim.add_chat_entry(Message(
-                    GameID.NULL,
+                    GameID.GROUP_SPECTATORS,
                     session.rounds_won_t + session.rounds_won_ct,
                     session.total_round_time,
                     [planter.position_id, GameID.TERM_HOLD, GameID.ITEM_C4, GameID.TERM_STOP]))
 
-            elif event_id == Event.C4_DEFUSED:
+            elif event_id == EventID.C4_DEFUSED:
                 obj_id = int(event_data[0])
                 defuser_id = int(event_data[1])
 
@@ -484,21 +484,21 @@ class SDGLiveClientBase(LiveClient):
 
                 # Add chat entry
                 sim.add_chat_entry(Message(
-                    GameID.NULL,
+                    GameID.GROUP_SPECTATORS,
                     session.rounds_won_t + session.rounds_won_ct,
                     session.total_round_time,
                     [defuser.position_id, GameID.ITEM_DKIT, GameID.ITEM_C4, GameID.TERM_STOP]))
 
-            elif event_id == Event.FX_C4_TOUCHED and accept_experienced_fx:
+            elif event_id == EventID.FX_C4_TOUCHED and accept_experienced_fx:
                 obj_id = int(event_data[0])
 
                 queue_sound(inventory.c4.sounds['disarming'], observed_player, session.objects[obj_id])
 
-            elif event_id == Event.FX_FOOTSTEP and accept_experienced_fx:
+            elif event_id == EventID.FX_FOOTSTEP and accept_experienced_fx:
                 player_id = int(event_data[0])
                 player = session.players[player_id]
 
-                pos_y, pos_x = player.get_position_indices(player.pos)
+                pos_y, pos_x = player.get_position_indices()
                 terrain_key = int(session.map.sound[pos_y, pos_x])
 
                 # Terrain sound
@@ -509,41 +509,45 @@ class SDGLiveClientBase(LiveClient):
                 sound = random.choice(sim.movements)
                 queue_sound(sound, observed_player, player)
 
-            elif event_id == Event.FX_C4_KEY_PRESS and accept_experienced_fx:
+            elif event_id == EventID.FX_C4_KEY_PRESS and accept_experienced_fx:
                 planter_id = int(event_data[0])
 
                 sound = random.choice(sim.keypresses)
                 queue_sound(sound, observed_player, session.players[planter_id])
 
-            elif event_id == Event.FX_C4_INIT and accept_experienced_fx:
+            elif event_id == EventID.FX_C4_INIT and accept_experienced_fx:
                 obj_owner_id = int(event_data[0])
 
                 queue_sound(inventory.c4.sounds['init'], observed_player, session.players[obj_owner_id])
 
-            elif event_id == Event.FX_C4_BEEP and accept_experienced_fx:
+            elif event_id == EventID.FX_C4_BEEP and accept_experienced_fx:
                 obj_id = int(event_data[0])
                 obj = session.objects[obj_id]
-                queue_sound(inventory.c4.sounds['beep_a'], observed_player, obj)
-                sim.add_effect(Colour(Colour.get_disk_indices(3), sim.colours['red'], 0.1, obj.pos[1], obj.pos[0], 0.4))
+                pos_y, pos_x = obj.get_position_indices()
 
-            elif event_id == Event.FX_C4_BEEP_DEFUSING and accept_experienced_fx:
+                queue_sound(inventory.c4.sounds['beep_a'], observed_player, obj)
+                sim.add_effect(Colour(get_disk_indices(3), sim.colours['red'], 0.1, pos_y, pos_x, 0.4))
+
+            elif event_id == EventID.FX_C4_BEEP_DEFUSING and accept_experienced_fx:
                 obj_id = int(event_data[0])
                 obj = session.objects[obj_id]
+                pos_y, pos_x = obj.get_position_indices()
 
                 # NOTE: Universally different sound for `BEEP_DEFUSING` would make it impossible to bluff
                 # It's only meant to inform the defuser and their team, anyway (and spectators)
                 if observed_player.team == GameID.GROUP_TEAM_T:
                     sound = inventory.c4.sounds['beep_a']
                     sim.add_effect(
-                        Colour(Colour.get_disk_indices(3), sim.colours['red'], 0.1, obj.pos[1], obj.pos[0], 0.4))
+                        Colour(get_disk_indices(3), sim.colours['red'], 0.1, pos_y, pos_x, 0.4))
+
                 else:
                     sound = inventory.c4.sounds['beep_b']
                     sim.add_effect(
-                        Colour(Colour.get_disk_indices(3), sim.colours['white'], 0.1, obj.pos[1], obj.pos[0], 0.4))
+                        Colour(get_disk_indices(3), sim.colours['white'], 0.1, pos_y, pos_x, 0.4))
 
                 queue_sound(sound, observed_player, obj)
 
-            elif event_id == Event.FX_BOUNCE and accept_experienced_fx:
+            elif event_id == EventID.FX_BOUNCE and accept_experienced_fx:
                 obj_id = int(event_data[0])
                 source = session.objects[obj_id]
 
@@ -551,19 +555,19 @@ class SDGLiveClientBase(LiveClient):
                 sound = inventory.get_item_by_id(source.item.id).sounds.get('bounce', inventory.flash.sounds['bounce'])
                 queue_sound(sound, observed_player, source)
 
-            elif event_id == Event.FX_LAND and accept_experienced_fx:
+            elif event_id == EventID.FX_LAND and accept_experienced_fx:
                 obj_id = int(event_data[0])
                 source = session.objects[obj_id]
 
                 sound = inventory.get_item_by_id(source.item.id).sounds.get('land', inventory.flash.sounds['land'])
                 queue_sound(sound, observed_player, source)
 
-            elif event_id == Event.FX_C4_NVG and accept_announced_fx:
+            elif event_id == EventID.FX_C4_NVG and accept_announced_fx:
                 obj_id = int(event_data[0])
 
                 queue_sound(inventory.c4.sounds['nvg'], observed_player, session.objects[obj_id])
 
-            elif event_id == Event.FX_ATTACK and accept_experienced_fx:
+            elif event_id == EventID.FX_ATTACK and accept_experienced_fx:
                 attacker_id = int(event_data[0])
                 item_id = event_data[-2]
                 item = inventory.get_item_by_id(item_id)
@@ -577,23 +581,23 @@ class SDGLiveClientBase(LiveClient):
                     if item.slot in Item.WEAPON_SLOTS:
                         sim.add_effect(Gunfire(source.pos, source.angle, item.flash_level, item.use_interval))
 
-            elif event_id == Event.FX_CLIP_LOW and accept_experienced_fx:
+            elif event_id == EventID.FX_CLIP_LOW and accept_experienced_fx:
                 attacker_id = int(event_data[0])
 
                 queue_sound(sim.sounds['clip_low'], observed_player, session.players[attacker_id])
 
-            elif event_id == Event.FX_CLIP_EMPTY and accept_experienced_fx:
+            elif event_id == EventID.FX_CLIP_EMPTY and accept_experienced_fx:
                 attacker_id = int(event_data[0])
 
                 queue_sound(sim.sounds['clip_empty'], observed_player, session.players[attacker_id])
 
-            elif event_id == Event.FX_EXTINGUISH and accept_experienced_fx:
+            elif event_id == EventID.FX_EXTINGUISH and accept_experienced_fx:
                 obj_id = int(event_data[0])
 
                 source = session.objects[obj_id]
                 queue_sound(inventory.get_item_by_id(source.item.id).sounds['extinguish'], observed_player, source)
 
-            elif event_id == Event.FX_FLASH and accept_experienced_fx:
+            elif event_id == EventID.FX_FLASH and accept_experienced_fx:
                 flashed_id = int(event_data[1])
                 debuff = event_data[2]
                 debuff_duration = event_data[3]
@@ -615,7 +619,7 @@ class SDGLiveClientBase(LiveClient):
 
                         queue_sound(sound, observed_player, observed_player)
 
-            elif event_id == Event.FX_WALL_HIT and accept_experienced_fx:
+            elif event_id == EventID.FX_WALL_HIT and accept_experienced_fx:
                 pos_x = event_data[0]
                 pos_y = event_data[1]
                 attacker_id = int(event_data[2])
@@ -628,7 +632,7 @@ class SDGLiveClientBase(LiveClient):
                     if item_id == GameID.ITEM_KNIFE:
                         queue_sound(inventory.knife.sounds['front_hit'], observed_player, session.players[attacker_id])
 
-            elif event_id == Event.PLAYER_RELOAD:
+            elif event_id == EventID.PLAYER_RELOAD:
                 reloader_id = int(event_data[0])
                 rld_event_type = event_data[-3]
                 rld_item_id = event_data[-2]
@@ -649,7 +653,7 @@ class SDGLiveClientBase(LiveClient):
                     if sound is not None:
                         queue_sound(sound, observed_player, session.players[reloader_id])
 
-            elif event_id == Event.PLAYER_DAMAGE:
+            elif event_id == EventID.PLAYER_DAMAGE:
                 attacker_id = int(event_data[0])
                 damaged_id = int(event_data[1])
                 damage = event_data[2]
@@ -675,7 +679,7 @@ class SDGLiveClientBase(LiveClient):
                         sound = knife.sounds['front_hit' if damage <= knife.base_damage else 'back_hit']
                         queue_sound(sound, observed_player, player)
 
-            elif event_id == Event.PLAYER_DEATH:
+            elif event_id == EventID.PLAYER_DEATH:
                 attacker_id = int(event_data[0])
                 victim_id = int(event_data[1])
                 excess = event_data[2]
@@ -697,7 +701,7 @@ class SDGLiveClientBase(LiveClient):
 
                 # Add chat entry
                 sim.add_chat_entry(Message(
-                    GameID.NULL,
+                    GameID.GROUP_SPECTATORS,
                     session.rounds_won_t + session.rounds_won_ct+1,
                     session.total_round_time,
                     [attacker_pos_id, GameID.TERM_KILL, player.position_id, GameID.TERM_STOP]))
@@ -790,7 +794,7 @@ class SDGLiveClientBase(LiveClient):
             player.move(dt, force_w, force_d, d_angle, walking, max_v, session.map.height, session.map.player_id)
 
             update_collider_map(
-                player.covered_indices, session.map.player_id, old_pos, player.pos, player.id, Map.PLAYER_ID_NULL)
+                player.covered_indices, session.map.player_id, old_pos, player.pos, player.id, MapID.PLAYER_ID_NULL)
 
             # Execute draw
             if draw_id:
@@ -824,13 +828,13 @@ class SDGLiveClientBase(LiveClient):
                     # NOTE: Prediction should not drop items, otherwise there can be a mismatch with the server
                     # that might not be reconciled until death
                     if player.held_object.item.slot == Item.SLOT_UTILITY:
-                        events = [Event(Event.FX_ATTACK, (player.id, player.held_object.item.id))]
+                        events = (Event(EventID.FX_ATTACK, (player.id, player.held_object.item.id)), )
                         player.d_pos_recoil[1] += player.held_object.item.use_pos_offset
                         player.d_angle_recoil += player.rng.normal(0., player.held_object.item.use_angle_std)
 
                     else:
                         events = player.attack(
-                            session.map.height, session.map.player_id, cursor_y, session.players, recoil=True)
+                            session.map.wall, session.map.player_id, cursor_y, session.players, recoil=True)
 
                     player.time_off_trigger = 0.
 
@@ -838,7 +842,7 @@ class SDGLiveClientBase(LiveClient):
                         knife_hit_processed = False
 
                         for event in events:
-                            if event.type == Event.FX_ATTACK:
+                            if event.type == EventID.FX_ATTACK:
                                 item_id = event.data[1]
                                 item = player.inventory.get_item_by_id(item_id)
 
@@ -851,7 +855,7 @@ class SDGLiveClientBase(LiveClient):
                                         sim.add_effect(
                                             Gunfire(player.pos, player.angle, item.flash_level, item.use_interval))
 
-                            elif event.type == Event.FX_WALL_HIT:
+                            elif event.type == EventID.FX_WALL_HIT:
                                 pos_x, pos_y = event.data[0]
                                 item_id = event.data[2]
                                 item = player.inventory.get_item_by_id(item_id)
@@ -876,12 +880,8 @@ class SDGLiveClientBase(LiveClient):
 
             obj: Object = entity
 
-            pos_x_1, pos_y_1 = state1.data[:2]
-            pos_x_2, pos_y_2 = state2.data[:2]
-
             # Interpolate movement
-            obj.pos[0] = state_ratio * pos_x_2 + (1. - state_ratio) * pos_x_1
-            obj.pos[1] = state_ratio * pos_y_2 + (1. - state_ratio) * pos_y_1
+            vec2_lerp_(obj.pos, state2.data[:2], state1.data[:2], state_ratio)
 
         else:
             player: Player = entity
@@ -889,38 +889,18 @@ class SDGLiveClientBase(LiveClient):
             if entity.id not in self.session.players or player.team == GameID.GROUP_SPECTATORS or not player.health:
                 return
 
-            old_pos = player.pos.copy()
-
-            pos_x_1, pos_y_1, angle_1 = state1.data[0], state1.data[1], state1.data[4]
-            r_angle_1, r_pos_x_1, r_pos_y_1 = state1.data[5], state1.data[6], state1.data[7]
-
             pos_x_2, pos_y_2, _, _, angle_2, r_angle_2, r_pos_x_2, r_pos_y_2, _, _, _, _, \
                 held_object_id, held_object_magazine, held_object_reserve = state2.data
 
-            # Interpolate position
-            player.pos[0] = state_ratio * pos_x_2 + (1. - state_ratio) * pos_x_1
-            player.pos[1] = state_ratio * pos_y_2 + (1. - state_ratio) * pos_y_1
-
-            update_collider_map(
-                player.covered_indices, self.session.map.player_id, old_pos, player.pos, player.id, Map.PLAYER_ID_NULL)
-
-            # When crossing -pi/pi, the negative angle needs to be brought into the positive range (or vice versa),
-            # so that convex combination can be performed
-            if angle_1*angle_2 < 0. and abs(angle_1 - angle_2) > F_PI:
-                if angle_1 < 0.:
-                    angle_1 += F_2PI
-                else:
-                    angle_2 += F_2PI
-
-            angle = state_ratio * angle_2 + (1. - state_ratio) * angle_1
-            player.angle = fix_angle_range(angle)
-
-            # Interpolate recoil
-            player.d_pos_recoil[0] = state_ratio * r_pos_x_2 + (1. - state_ratio) * r_pos_x_1
-            player.d_pos_recoil[1] = state_ratio * r_pos_y_2 + (1. - state_ratio) * r_pos_y_1
-
-            r_angle = state_ratio * r_angle_2 + (1. - state_ratio) * r_angle_1
-            player.d_angle_recoil = fix_angle_range(r_angle)
+            player.angle, player.d_angle_recoil = interpolate_player(
+                player.id,
+                player.pos,
+                player.d_pos_recoil,
+                player.covered_indices,
+                self.session.map.player_id,
+                (state1.data[0], state1.data[1], state1.data[4], state1.data[5], state1.data[6], state1.data[7]),
+                (pos_x_2, pos_y_2, angle_2, r_angle_2, r_pos_x_2, r_pos_y_2),
+                state_ratio)
 
             # (Re)set held item
             if player.held_object is not None and held_object_id and held_object_id != player.held_object.item.id:
@@ -987,3 +967,36 @@ class SDGLiveClientBase(LiveClient):
         # HBLf (2+1+4+4=11) + 13B2hf (13*1+2*2+4=21) = 32B
         return struct.pack(
             '>HBLf13B2hf', global_log_request_counter, action.type, action.counter, action.timestamp, *action.data)
+
+
+@jit(
+    'UniTuple(float64, 2)(int16, float64[:], float64[:], UniTuple(int64[:], 2), int16[:, :], '
+    'UniTuple(float64, 6), UniTuple(float64, 6), float64)',
+    nopython=True, nogil=True, cache=True)
+def interpolate_player(
+    player_id: int,
+    pos: ndarray,
+    pos_rec: ndarray,
+    covered_indices: tuple[ndarray, ndarray],
+    player_id_map: ndarray,
+    state_1: tuple[float, ...],
+    state_2: tuple[float, ...],
+    state_ratio: float
+) -> tuple[float, float]:
+
+    old_pos = pos.copy()
+
+    # Interpolate position
+    vec2_lerp_(pos, state_2[0:2], state_1[0:2], state_ratio)
+
+    update_collider_map(covered_indices, player_id_map, old_pos, pos, player_id, MapID.PLAYER_ID_NULL)
+
+    # Interpolate angle
+    angle = angle_lerp(state_2[3], state_1[3], state_ratio)
+
+    # Interpolate recoil
+    vec2_lerp_(pos_rec, state_2[4:6], state_1[4:6], state_ratio)
+
+    angle_rec = angle_lerp(state_2[4], state_1[4], state_ratio)
+
+    return angle, angle_rec

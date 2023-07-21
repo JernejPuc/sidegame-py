@@ -8,15 +8,17 @@ https://www.gabrielgambetta.com/lag-compensation.html
 """
 
 from collections import deque
+from math import exp
 from typing import Deque, Dict, Iterable, List, Optional, Tuple, Union
 
 import numpy as np
 
-from sidegame.assets import Map
-from sidegame.game import GameID
-from sidegame.physics import PlayerEntity, update_collider_map
-from sidegame.networking.core import Entry, Action, Entity
-from sidegame.game.shared import Event, Item, Inventory, Object, Weapon, Knife, Flash, Explosive, Incendiary, Smoke
+from sidegame.utils_jit import vec2_norm2, vec2_rot_, F_PI2
+from sidegame.assets import Map, MapID
+from sidegame.game import GameID, EventID
+from sidegame.physics import PlayerEntity, update_collider_map, MAX_VIEW_RANGE
+from sidegame.networking.core import Entry, Action, Event, Entity
+from sidegame.game.shared import Item, Inventory, Object, Weapon, Knife, Flash, Explosive, Incendiary, Smoke, C4
 
 
 class Player(Entity, PlayerEntity):
@@ -75,8 +77,6 @@ class Player(Entity, PlayerEntity):
         self.d_pos_recoil = np.array([0., 0.])
         self.d_angle_recoil = 0.
 
-        self.pos_history: Deque[np.ndarray] = deque()
-
         self.slots: List[Union[Object, None]] = [None] * 9  # 1 armour slot + 8 drawable slots
         self.held_object: Object = None
         self.reload_events: Deque[Tuple[float, int]] = deque()
@@ -92,14 +92,14 @@ class Player(Entity, PlayerEntity):
         self.slots[Item.SLOT_KNIFE] = knife
         self.draw(knife)
 
-    def reset_round(self, spawn_origin: np.ndarray, player_map: np.ndarray):
+    def reset_round(self, spawn_origin: np.ndarray, player_id_map: np.ndarray):
         """Reset health, position, movement, and inventory state."""
 
         # Reset position
         new_pos = spawn_origin + self.SPAWN_OFFSETS[(self.position_id-1) % 5]
         self.angle = self.SPAWN_ANGLES[(self.position_id-1) % 5]
 
-        update_collider_map(self.covered_indices, player_map, self.pos, new_pos, self.id, Map.PLAYER_ID_NULL)
+        update_collider_map(self.covered_indices, player_id_map, self.pos, new_pos, self.id, MapID.PLAYER_ID_NULL)
 
         self.pos = new_pos
 
@@ -148,7 +148,7 @@ class Player(Entity, PlayerEntity):
 
         self.name = name
 
-        return Event(Event.CTRL_PLAYER_CHANGED, (self.id, name, self.money, self.dev_mode))
+        return Event(EventID.CTRL_PLAYER_CHANGED, (self.id, name, self.money, self.dev_mode))
 
     def set_team(self, team: int, position_id: int) -> Event:
         """
@@ -159,7 +159,7 @@ class Player(Entity, PlayerEntity):
         self.team = team
         self.position_id = position_id
 
-        return Event(Event.CTRL_PLAYER_MOVED, (self.id, team, position_id))
+        return Event(EventID.CTRL_PLAYER_MOVED, (self.id, team, position_id))
 
     def add_money(self, money: int):
         """Clip money loss or gain within expected range."""
@@ -171,6 +171,7 @@ class Player(Entity, PlayerEntity):
         action: Action,
         players: Dict[int, 'Player'],
         objects: Dict[int, Object],
+        c4: C4 | None,
         map_: Map,
         timestamp: float,
         total_lag: float,
@@ -209,7 +210,7 @@ class Player(Entity, PlayerEntity):
         # Decay/advance time-dependent variables
         self.decay(dt, recoil=True)
 
-        events = deque()
+        events = []
 
         # Advance progress of ongoing reload
         if self.time_to_reload:
@@ -232,7 +233,7 @@ class Player(Entity, PlayerEntity):
                     if player.team != GameID.GROUP_SPECTATORS and player.id != self.id and player.health:
                         player.rewind(timestamp_of_client_view, map_.player_id)
 
-                events.extend(self.attack(map_.height, map_.player_id, cursor_y, players))
+                events.extend(self.attack(map_.wall, map_.player_id, cursor_y, players))
 
                 # Wind back to present state
                 for player in players.values():
@@ -240,35 +241,38 @@ class Player(Entity, PlayerEntity):
                         player.wind_back(map_.player_id)
 
             else:
-                events.extend(self.attack(map_.height, map_.player_id, cursor_y, players))
+                events.extend(self.attack(map_.wall, map_.player_id, cursor_y, players))
 
             self.time_off_trigger = 0.
 
-        # Update plant
+        # Update plant/defuse
+        focus = use and not attack and self.state == self.STATE_STILL
+
         if self.team == GameID.GROUP_TEAM_T:
-            focus = self.held_object.item.id == GameID.ITEM_C4 and use and not attack and self.state == self.STATE_STILL
+            focus = focus and self.held_object.item.id == GameID.ITEM_C4
 
-            c4 = self.slots[Item.SLOT_OTHER]
-
-            if c4 is not None:
-                c4_event = c4.try_plant(self.pos, map_.landmark, focus, action.timestamp)
+            if focus:
+                c4 = self.slots[Item.SLOT_OTHER]
+                c4_event = c4.try_plant(self.pos, map_.landmark, action.timestamp)
 
                 if c4_event is not None:
                     events.append(c4_event)
 
-                    if c4_event.type == Event.C4_PLANTED:
+                    if c4_event.type == EventID.C4_PLANTED:
                         events.extend(self.drop(c4, throw_len=0., throw_vel=0.))
 
-        # Store data to update defuse in regular state update
         else:
-            focus = hovered_id == GameID.ITEM_C4 and use and not attack
-            kit_available = self.slots[Item.SLOT_OTHER] is not None
+            focus = focus and hovered_id == GameID.ITEM_C4 and c4 is not None
 
-            while self.actions and (action.timestamp - self.actions[0].timestamp) > self.MAX_ACCEPTABLE_LAG:
-                del self.actions[0]
+            if focus:
+                kit_available = self.slots[Item.SLOT_OTHER] is not None
+                c4_event = c4.try_defuse(self.pos, self.id, kit_available, action.timestamp)
 
-            self.actions.append(
-                Action(action.type, action.counter, action.timestamp, (self.pos, focus, kit_available), dt=dt))
+                if c4_event is not None:
+                    events.append(c4_event)
+
+                    if c4_event.type == EventID.C4_DEFUSED:
+                        events.append(Event(EventID.OBJECT_EXPIRE, c4.id))
 
         # Drop held item, pick up hovered item, or start reload sequence
         if not focus:
@@ -279,7 +283,7 @@ class Player(Entity, PlayerEntity):
                     events.extend(drop_events)
 
             if use:
-                pickup_events = self.pick_up(hovered_entity_id, map_, objects)
+                pickup_events = self.pick_up(hovered_entity_id, objects)
 
                 if pickup_events is not None:
                     events.extend(pickup_events)
@@ -294,7 +298,7 @@ class Player(Entity, PlayerEntity):
 
                 if obj is not None and obj is not self.held_object:
                     self.draw(obj)
-                    events.append(Event(Event.PLAYER_RELOAD, (self.id, Item.RLD_DRAW, self.held_object.item.id)))
+                    events.append(Event(EventID.PLAYER_RELOAD, (self.id, Item.RLD_DRAW, self.held_object.item.id)))
 
             if rld:
                 rld_event = self.reload()
@@ -310,7 +314,7 @@ class Player(Entity, PlayerEntity):
         footstep_event = self.move(dt, force_w, force_d, d_angle, walking, max_vel, map_.height, map_.player_id)
 
         if footstep_event:
-            events.append(Event(Event.FX_FOOTSTEP, self.id))
+            events.append(Event(EventID.FX_FOOTSTEP, self.id))
 
         update_collider_map(
             self.covered_indices,
@@ -318,7 +322,7 @@ class Player(Entity, PlayerEntity):
             self.states[-1].data if self.states else self.pos,
             self.pos,
             self.id,
-            Map.PLAYER_ID_NULL)
+            MapID.PLAYER_ID_NULL)
 
         self.update_position_history(Entry(self.id, Entry.TYPE_STATE, action.counter, timestamp, self.pos))
 
@@ -374,7 +378,7 @@ class Player(Entity, PlayerEntity):
             excess = abs(0.5 - self.health)
             self.health = 0.
 
-            death_event = Event(Event.PLAYER_DEATH, (attacker_id, victim_id, item_id, excess))
+            death_event = Event(EventID.PLAYER_DEATH, (attacker_id, victim_id, item_id, excess))
 
             return self.eval_death(death_event, map_)
 
@@ -384,11 +388,10 @@ class Player(Entity, PlayerEntity):
 
         return Event.EMPTY_EVENT_LIST
 
-    def eval_death(self, death_event: Event, _map: Map) -> Iterable[Event]:
+    def eval_death(self, death_event: Event, map_: Map) -> Iterable[Event]:
         """Drop carried objects and clear occupied collider map area."""
 
-        events = deque()
-        events.append(death_event)
+        events = [death_event]
 
         # Drop all (droppable) objects
         for obj_idx in range(len(self.slots)):
@@ -399,10 +402,10 @@ class Player(Entity, PlayerEntity):
                 while obj.carrying:
                     drop_events = self.drop(obj, rng=True)
 
-                    if drop_events is not None:
-                        events.extend(drop_events)
-                    else:
+                    if drop_events is None:
                         break
+
+                    events.extend(drop_events)
 
                     # Dropping items resets their carried counter to 1 to allow them to be picked up,
                     # but it also messes up this loop without this check
@@ -413,10 +416,10 @@ class Player(Entity, PlayerEntity):
         if self.slots[Item.SLOT_ARMOUR] is not None:
             obj = self.slots[Item.SLOT_ARMOUR]
             self.slots[Item.SLOT_ARMOUR] = None
-            events.append(Event(Event.OBJECT_ASSIGN, (self.id, obj.item.id, 0., 0, 0, 0, self.money, 0)))
+            events.append(Event(EventID.OBJECT_ASSIGN, (self.id, obj.item.id, 0., 0, 0, 0, self.money, 0)))
 
         # Clear collider map
-        _map.player_id[self.get_covered_indices()] = Map.PLAYER_ID_NULL
+        map_.player_id[self.get_covered_indices()] = MapID.PLAYER_ID_NULL
 
         # Reset decaying or queued variables
         self.queued_damage = 0.
@@ -440,15 +443,11 @@ class Player(Entity, PlayerEntity):
         d_pos = self.pos - incoming_pos
 
         # Rotate into local view
-        angle = -(self.angle + np.pi/2.)
+        angle = -(self.angle + F_PI2)
 
-        rotmat = np.array([
-            [np.cos(angle), -np.sin(angle)],
-            [np.sin(angle), np.cos(angle)]])
+        vec2_rot_(d_pos, angle)
 
-        d_pos = np.dot(rotmat, d_pos)
-
-        return d_pos / max(np.linalg.norm(d_pos), 1.) * effective_damage / self.AIM_PUNCH_DAMAGE_REFERENCE
+        return d_pos / max(vec2_norm2(d_pos), 1.) * effective_damage / self.AIM_PUNCH_DAMAGE_REFERENCE
 
     def get_tagging_factor(self):
         """
@@ -475,7 +474,7 @@ class Player(Entity, PlayerEntity):
             https://docs.google.com/spreadsheets/d/11tDzUNBq9zIX6_9Rel__fdAUezAQzSnh5AVYzCP060c/edit#gid=0
         """
 
-        tick_norm = dt/self.DT64
+        tick_norm = dt / self.DT64
 
         # Decay use obstructions
         self.time_to_reload = max(self.time_to_reload - dt, 0.)
@@ -490,29 +489,29 @@ class Player(Entity, PlayerEntity):
 
         else:
             self.time_since_damage_taken += dt
-            self.recent_damage_taken *= np.exp(
+            self.recent_damage_taken *= exp(
                 -self.time_since_damage_taken * tick_norm / (self.LOG10E * self.TAGGING_RECOVERY_TIME))
 
         # Decay innacuracy
-        self.accumulated_firing_inaccuracy *= np.exp(
+        self.accumulated_firing_inaccuracy *= exp(
             -self.time_off_trigger * tick_norm / (self.LOG10E * self.held_object.item.recovery_time))
 
         # Decay recoil
         if recoil:
             recoil_recovery_time = self.held_object.item.use_interval * \
-                (1. - np.exp(-self.held_object.item.recovery_time / self.held_object.item.use_interval))
+                (1. - exp(-self.held_object.item.recovery_time / self.held_object.item.use_interval))
 
-            self.d_angle_recoil *= np.exp(
+            self.d_angle_recoil *= exp(
                 -(self.time_off_trigger * tick_norm / (self.LOG10E * recoil_recovery_time)))
 
             self.d_pos_recoil *= (
-                np.exp(-(self.time_off_trigger * tick_norm / (self.LOG10E * recoil_recovery_time)))
-                + np.exp(-self.time_since_damage_taken * tick_norm / (self.LOG10E * self.TAGGING_RECOVERY_TIME)))
+                exp(-(self.time_off_trigger * tick_norm / (self.LOG10E * recoil_recovery_time)))
+                + exp(-self.time_since_damage_taken * tick_norm / (self.LOG10E * self.TAGGING_RECOVERY_TIME)))
 
     def attack(
         self,
-        height_map: np.ndarray,
-        player_map: np.ndarray,
+        wall_map: np.ndarray,
+        player_id_map: np.ndarray,
         cursor_y: float,
         players: Dict[int, 'Player'],
         recoil: bool = False
@@ -536,7 +535,7 @@ class Player(Entity, PlayerEntity):
                 self.held_object.item.firing_inaccuracy*0.1**(self.time_off_trigger/self.held_object.item.recovery_time)
 
             events = self.held_object.fire(
-                self.pos, self.vel, self.angle, self.accumulated_firing_inaccuracy, height_map, player_map)
+                self.pos, self.vel, self.angle, self.accumulated_firing_inaccuracy, wall_map, player_id_map)
 
             # Single event means no clip, multiple means at least one attack
             if recoil and len(events) > 1:
@@ -545,7 +544,7 @@ class Player(Entity, PlayerEntity):
 
         # Slash with knife
         elif self.held_object.item.slot == Item.SLOT_KNIFE:
-            events = self.held_object.slash(self.pos, height_map, player_map, players)
+            events = self.held_object.slash(self.pos, wall_map, player_id_map, players)
 
             if recoil:
                 self.d_pos_recoil[1] += self.held_object.item.use_pos_offset
@@ -553,14 +552,14 @@ class Player(Entity, PlayerEntity):
 
         # Throw grenade
         elif self.held_object.item.slot == Item.SLOT_UTILITY:
-            throw_length = max(5., self.MAX_VIEW_RANGE - cursor_y)
+            throw_length = max(5., MAX_VIEW_RANGE - cursor_y)
             thrown_item_id = self.held_object.item.id
 
             events = self.drop(
                 self.held_object, fused=True, throw_len=throw_length, throw_vel=self.GRENADE_THROW_VELOCITY)
 
             if events is not None:
-                events.append(Event(Event.FX_ATTACK, (self.id, thrown_item_id)))
+                events.append(Event(EventID.FX_ATTACK, (self.id, thrown_item_id)))
 
             else:
                 events = Event.EMPTY_EVENT_LIST
@@ -582,15 +581,14 @@ class Player(Entity, PlayerEntity):
         """
 
         while self.states:
-            if entry.timestamp - self.states[0].timestamp > self.MAX_ACCEPTABLE_LAG:
-                del self.states[0]
-
-            else:
+            if entry.timestamp - self.states[0].timestamp <= self.MAX_ACCEPTABLE_LAG:
                 break
+
+            self.states.popleft()
 
         self.states.append(entry)
 
-    def rewind(self, target_timestamp: float, player_map: np.ndarray):
+    def rewind(self, target_timestamp: float, player_id_map: np.ndarray):
         """
         Find the position where the player was at the given time
         and accordingly update the player collider map.
@@ -611,11 +609,11 @@ class Player(Entity, PlayerEntity):
             return
 
         # Clear currently covered area, occupy past covered area (with consideration for other occupators)
-        update_collider_map(self.covered_indices, player_map, self.pos, pos, self.id, Map.PLAYER_ID_NULL)
+        update_collider_map(self.covered_indices, player_id_map, self.pos, pos, self.id, MapID.PLAYER_ID_NULL)
 
         self.pos = pos
 
-    def wind_back(self, player_map: np.ndarray):
+    def wind_back(self, player_id_map: np.ndarray):
         """
         Set the player position to the last available state
         and accordingly update the player collider map.
@@ -628,7 +626,7 @@ class Player(Entity, PlayerEntity):
 
         # Clear past occupied area (with consideration for other occupators), reclaim currently covered area
         # (passes if current position was the closest match)
-        update_collider_map(self.covered_indices, player_map, self.pos, pos, self.id, Map.PLAYER_ID_NULL)
+        update_collider_map(self.covered_indices, player_id_map, self.pos, pos, self.id, MapID.PLAYER_ID_NULL)
 
         self.pos = pos
 
@@ -650,12 +648,12 @@ class Player(Entity, PlayerEntity):
         if obj is None:
             obj = Weapon(item, self, rng=self.rng) if item.slot in Item.WEAPON_SLOTS else Object(item, self)
             self.slots[item.slot + item.subslot] = obj
-            return Event(Event.OBJECT_ASSIGN, (self.id, item_id, *obj.get_values(), self.money, item.price))
+            return Event(EventID.OBJECT_ASSIGN, (self.id, item_id, *obj.get_values(), self.money, item.price))
 
         # Reset armour durability
         elif obj.item.id == GameID.ITEM_ARMOUR:
             obj.durability = obj.item.durability_cap
-            return Event(Event.OBJECT_ASSIGN, (self.id, item_id, *obj.get_values(), self.money, item.price))
+            return Event(EventID.OBJECT_ASSIGN, (self.id, item_id, *obj.get_values(), self.money, item.price))
 
         # If buying over capacity, drop new object
         # If buying an item with an already occupied slot, drop new object
@@ -666,9 +664,9 @@ class Player(Entity, PlayerEntity):
         # Buy an already carried item with free capacity
         else:
             obj.carrying += 1
-            return Event(Event.OBJECT_ASSIGN, (self.id, item_id, *obj.get_values(), self.money, item.price))
+            return Event(EventID.OBJECT_ASSIGN, (self.id, item_id, *obj.get_values(), self.money, item.price))
 
-    def pick_up(self, hovered_entity_id: int, _map: Map, objects: Dict[int, Object]) -> Union[Tuple[Event], None]:
+    def pick_up(self, hovered_entity_id: int, objects: Dict[int, Object]) -> Union[Tuple[Event], None]:
         """
         Verify that the object seen by the client is eligible for pickup
         and handle its effects.
@@ -677,7 +675,7 @@ class Player(Entity, PlayerEntity):
         obj = objects.get(hovered_entity_id, None)
 
         # If no object in sight or object has a fuse or is out of range
-        if obj is None or obj.lifetime != np.Inf or np.linalg.norm(self.pos - obj.pos) > self.MAX_PICKUP_RANGE:
+        if obj is None or obj.lifetime != np.inf or vec2_norm2(self.pos - obj.pos) > self.MAX_PICKUP_RANGE:
             return None
 
         # CTs cannot pick up c4
@@ -696,8 +694,8 @@ class Player(Entity, PlayerEntity):
             obj.owner = self
             self.slots[obj.item.slot + obj.item.subslot] = obj
             return [
-                Event(Event.OBJECT_ASSIGN, (self.id, obj.item.id, *obj.get_values(), self.money, 0)),
-                Event(Event.OBJECT_EXPIRE, obj.id)]
+                Event(EventID.OBJECT_ASSIGN, (self.id, obj.item.id, *obj.get_values(), self.money, 0)),
+                Event(EventID.OBJECT_EXPIRE, obj.id)]
 
         elif corr_obj.item.id == obj.item.id:
             # Picking up an object with cap over 1 and already carrying 1,
@@ -705,8 +703,8 @@ class Player(Entity, PlayerEntity):
             if corr_obj.carrying < corr_obj.item.carrying_cap:
                 corr_obj.carrying += 1
                 return [
-                    Event(Event.OBJECT_ASSIGN, (self.id, corr_obj.item.id, *corr_obj.get_values(), self.money, 0)),
-                    Event(Event.OBJECT_EXPIRE, obj.id)]
+                    Event(EventID.OBJECT_ASSIGN, (self.id, corr_obj.item.id, *corr_obj.get_values(), self.money, 0)),
+                    Event(EventID.OBJECT_EXPIRE, obj.id)]
 
             # Otherwise, the object is consumed and its resources pooled
             # (might be better to not consume the dropped object and only decrease its resources)
@@ -719,8 +717,8 @@ class Player(Entity, PlayerEntity):
                 corr_obj.magazine = max_magazine
                 corr_obj.reserve = min(corr_obj.item.reserve_cap, corr_obj.reserve + obj.reserve + min_magazine)
                 return [
-                    Event(Event.OBJECT_ASSIGN, (self.id, corr_obj.item.id, *corr_obj.get_values(), self.money, 0)),
-                    Event(Event.OBJECT_EXPIRE, obj.id)]
+                    Event(EventID.OBJECT_ASSIGN, (self.id, corr_obj.item.id, *corr_obj.get_values(), self.money, 0)),
+                    Event(EventID.OBJECT_EXPIRE, obj.id)]
 
             # No pickup if the corresponding object's values are full
             else:
@@ -733,8 +731,8 @@ class Player(Entity, PlayerEntity):
 
         return [
             *drop_events,
-            Event(Event.OBJECT_ASSIGN, (self.id, obj.item.id, *obj.get_values(), self.money, 0)),
-            Event(Event.OBJECT_EXPIRE, obj.id)]
+            Event(EventID.OBJECT_ASSIGN, (self.id, obj.item.id, *obj.get_values(), self.money, 0)),
+            Event(EventID.OBJECT_EXPIRE, obj.id)]
 
     def draw(self, obj: Object):
         """Switch to given carried object."""
@@ -744,6 +742,24 @@ class Player(Entity, PlayerEntity):
 
         self.held_object = obj
         self.time_until_drawn = obj.item.draw_time
+
+    def get_next_item_by_slot(self, slot: int, subslot: int = 0) -> int:
+        """
+        Get the ID of the item at the specified slot. If the player is holding
+        a utility, which can share its slot with multiple others, the utilities
+        are cycled through to the next.
+        """
+
+        if slot == Item.SLOT_UTILITY and any(self.slots[Item.SLOT_UTILITY:]):
+            if slot == self.held_object.item.slot:
+                subslot = (self.held_object.item.subslot + 1) % 4
+
+            while self.slots[slot + subslot] is None:
+                subslot = (subslot + 1) % 4
+
+        obj = self.slots[slot + subslot]
+
+        return obj.item.id if obj is not None else GameID.NULL
 
     def drop(
         self, obj: Object, fused: Optional[bool] = False, throw_len: float = None, throw_vel: float = None,
@@ -765,10 +781,13 @@ class Player(Entity, PlayerEntity):
         if fused:
             if obj.item.id == GameID.ITEM_FLASH:
                 dropped_obj = Flash(obj.item, self)
+
             elif obj.item.id == GameID.ITEM_EXPLOSIVE:
                 dropped_obj = Explosive(obj.item, self)
+
             elif obj.item.subslot == Item.SUBSLOT_INCENDIARY:
                 dropped_obj = Incendiary(obj.item, self)
+
             else:
                 dropped_obj = Smoke(obj.item, self)
 
@@ -792,7 +811,7 @@ class Player(Entity, PlayerEntity):
         dropped_obj.carrying = 1
 
         return [
-            Event(Event.OBJECT_ASSIGN, (self.id, obj.item.id, *obj_values, self.money, 0)),
+            Event(EventID.OBJECT_ASSIGN, (self.id, obj.item.id, *obj_values, self.money, 0)),
             self.throw(dropped_obj, throw_len, throw_vel, rng)]
 
     def throw(
@@ -810,7 +829,7 @@ class Player(Entity, PlayerEntity):
 
         obj.throw(self.pos, land_pos, throw_velocity, init_vel=self.vel)
 
-        return Event(Event.OBJECT_SPAWN, obj)
+        return Event(EventID.OBJECT_SPAWN, obj)
 
     def reload(self) -> Union[Event, None]:
         """Try to start a reloading sequence."""
@@ -828,7 +847,7 @@ class Player(Entity, PlayerEntity):
         self.reload_events.clear()
         self.reload_events.extend(self.held_object.item.reload_events)
 
-        return Event(Event.PLAYER_RELOAD, (self.id, Item.RLD_START, self.held_object.item.id))
+        return Event(EventID.PLAYER_RELOAD, (self.id, Item.RLD_START, self.held_object.item.id))
 
     def eval_reload(self, cancel: bool) -> Union[Event, None]:
         """
@@ -852,20 +871,19 @@ class Player(Entity, PlayerEntity):
                     self.held_object.magazine += used_res
                     self.held_object.reserve -= used_res
 
-                    return Event(Event.PLAYER_RELOAD, (self.id, Item.RLD_ADD, self.held_object.item.id))
+                    return Event(EventID.PLAYER_RELOAD, (self.id, Item.RLD_ADD, self.held_object.item.id))
 
                 # Fast-forward to reload end event
                 else:
                     while self.reload_events:
-                        if self.reload_events[0][1] != Item.RLD_END:
-                            evtime = self.reload_events.popleft()[0]
-                            self.time_to_reload = self.held_object.item.reload_time - evtime
-
-                        else:
+                        if self.reload_events[0][1] == Item.RLD_END:
                             break
 
+                        evtime = self.reload_events.popleft()[0]
+                        self.time_to_reload = self.held_object.item.reload_time - evtime
+
             else:
-                return Event(Event.PLAYER_RELOAD, (self.id, Item.RLD_END, self.held_object.item.id))
+                return Event(EventID.PLAYER_RELOAD, (self.id, Item.RLD_END, self.held_object.item.id))
 
         # Cancel on held object drop or switch
         elif cancel:

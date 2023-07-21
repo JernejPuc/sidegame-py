@@ -1,10 +1,9 @@
 """Visual elements that change and expire over time."""
 
-from typing import Union
 import numpy as np
 
 from sidegame.assets import ImageBank
-from sidegame.ext import sdglib
+from sidegame.utils_jit import get_line_indices, get_disk_indices
 
 
 class Effect:
@@ -104,37 +103,14 @@ class Colour(Effect):
         overall lifetime.
         """
 
-    @staticmethod
-    def get_disk_indices(radius: int):
-        """Get indices of a disk with given radius relative to its centre."""
-
-        rel_indices = np.indices((radius*2 + 1, radius*2 + 1)) - np.array([radius, radius])[..., None, None]
-
-        indices_y, indices_x = np.nonzero(np.linalg.norm(rel_indices, axis=0) <= radius)
-
-        return indices_y - radius, indices_x - radius
-
-    @staticmethod
-    def get_line_indices(angle: float, length: int):
-        """Get indices of an oriented line with given length relative to its origin."""
-
-        indexed_area_diameter = length*2 + 1
-        starting_point = np.array([length, length], dtype=np.float64)
-        endpoint = starting_point + np.array([np.cos(angle), np.sin(angle)]) * length
-
-        line_mask = sdglib.mask_ray(indexed_area_diameter, starting_point, endpoint)
-        indices_y, indices_x = np.nonzero(line_mask)
-
-        return indices_y - length, indices_x - length
-
 
 class Explosion(Colour):
     """A bright yellow-coloured disk-shaped effect."""
 
     COLOUR = ImageBank.COLOURS['yellow']
 
-    def __init__(self, pos: np.ndarray, radius: Union[int, float], lifetime: float):
-        cover_indices = self.get_disk_indices(round(radius))
+    def __init__(self, pos: np.ndarray, radius: int | float, lifetime: float):
+        cover_indices = get_disk_indices(round(radius))
         pos_y = round(pos[1])
         pos_x = round(pos[0])
 
@@ -145,6 +121,7 @@ class Explosion(Colour):
 
         if lifetime_ratio > 0.1:
             intensity = (lifetime_ratio - 0.1) * 0.5 / 0.9 + 0.5
+
         else:
             intensity = lifetime_ratio * 0.5 / 0.1
             self.opacity = intensity
@@ -157,8 +134,8 @@ class Flame(Colour):
 
     COLOUR = ImageBank.COLOURS['e_red']
 
-    def __init__(self, pos: np.ndarray, radius: Union[int, float], lifetime: float):
-        cover_indices = self.get_disk_indices(round(radius))
+    def __init__(self, pos: np.ndarray, radius: int | float, lifetime: float):
+        cover_indices = get_disk_indices(round(radius))
         pos_y = round(pos[1])
         pos_x = round(pos[0])
 
@@ -169,6 +146,7 @@ class Flame(Colour):
 
         if lifetime_ratio > 0.1:
             intensity = (lifetime_ratio - 0.1) * 0.5 / 0.9 + 0.5
+
         else:
             intensity = lifetime_ratio * 0.5 / 0.1
             self.opacity = intensity
@@ -181,8 +159,8 @@ class Fog(Colour):
 
     COLOUR = ImageBank.COLOURS['grey']
 
-    def __init__(self, pos: np.ndarray, radius: Union[int, float], lifetime: float):
-        cover_indices = self.get_disk_indices(round(radius))
+    def __init__(self, pos: np.ndarray, radius: int | float, lifetime: float):
+        cover_indices = get_disk_indices(round(radius))
         pos_y = round(pos[1])
         pos_x = round(pos[0])
 
@@ -193,6 +171,7 @@ class Fog(Colour):
 
         if lifetime_ratio > 0.1:
             intensity = (lifetime_ratio - 0.1) * 0.4 / 0.9 + 0.4
+
         else:
             intensity = lifetime_ratio * 0.4 / 0.1
 
@@ -208,7 +187,7 @@ class Gunfire(Colour):
     COLOUR = ImageBank.COLOURS['e_yellow']
 
     def __init__(self, pos: np.ndarray, angle: float, length: int, lifetime: float):
-        cover_indices = self.get_line_indices(angle, length)
+        cover_indices = get_line_indices(angle, length)
         pos_y = round(pos[1])
         pos_x = round(pos[0])
 
@@ -226,11 +205,11 @@ class Decal(Colour):
 
     def __init__(
         self,
-        pos_y: Union[int, float],
-        pos_x: Union[int, float],
+        pos_y: int | float,
+        pos_x: int | float,
         colour: np.ndarray = ImageBank.COLOURS['black'],
         opacity: float = 0.8,
-        lifetime: float = np.Inf
+        lifetime: float = np.inf
     ):
         cover_indices = np.array(0, ndmin=1), np.array(0, ndmin=1)
         pos_y = round(pos_y)
@@ -239,7 +218,7 @@ class Decal(Colour):
         super().__init__(cover_indices, colour.copy(), lifetime, pos_y=pos_y, pos_x=pos_x, opacity=opacity)
 
     def update_colour(self):
-        if self.lifetime != np.Inf:
+        if self.lifetime != np.inf:
             self.opacity = self.starting_opacity * self.lifetime / self.starting_lifetime
 
 

@@ -14,10 +14,9 @@ import cv2
 import sdl2
 import sdl2.ext
 
-from sidegame.assets import Map
 from sidegame.utils import StridedFunction
 from sidegame.networking import Entry, Action, ReplayClient
-from sidegame.game import GameID
+from sidegame.game import GameID, MapID
 from sidegame.game.shared import Session
 from sidegame.game.client.interface import SDGLiveClient, _create_rgb_surface, _get_fullscreen_mode
 from sidegame.game.client.simulation import Simulation
@@ -268,7 +267,7 @@ class SDGReplayClient(ReplayClient):
             if not self.session.is_spectator(self.sim.own_player_id):
                 # If dead, follow the originally observed player
                 if self.session.is_dead_player(self.sim.own_player_id) and view != GameID.VIEW_LOBBY:
-                    if self.sim.view == GameID.VIEW_WORLD and hovered_entity_id != Map.PLAYER_ID_NULL:
+                    if self.sim.view == GameID.VIEW_WORLD and hovered_entity_id != MapID.PLAYER_ID_NULL:
                         self.sim.observed_player_id = hovered_entity_id
 
                 # When returning to life, switch back to own player
@@ -326,8 +325,8 @@ class SDGReplayClient(ReplayClient):
         self.rng = np.random.default_rng(self.init_args.seed)
         random.seed(self.init_args.seed)
 
-        self.session = Session(rng=self.rng)
-        assets = (self.sim.images, self.sim.sounds, self.sim.map, self.sim.inventory)
+        self.session = Session(map=self.session.map, rng=self.rng)
+        assets = (self.sim.images, self.sim.sounds, self.sim.inventory)
 
         self.sim = Simulation(
             self.own_entity_id, self.init_args.tick_rate, self.init_args.audio_device, self.session, assets)
@@ -372,11 +371,11 @@ class SDGReplayClient(ReplayClient):
 
                 # Volume
                 elif keysim == sdl2.SDLK_UP:
-                    self.sim.audio_system.volume = np.clip(self.sim.audio_system.volume + 0.05, 0., 1.)
+                    self.sim.audio_system.volume = min(2., self.sim.audio_system.volume + 0.05)
                     self.logger.info('Volume increased to %.2f', self.sim.audio_system.volume)
 
                 elif keysim == sdl2.SDLK_DOWN:
-                    self.sim.audio_system.volume = np.clip(self.sim.audio_system.volume - 0.05, 0., 1.)
+                    self.sim.audio_system.volume = max(0., self.sim.audio_system.volume - 0.05)
                     self.logger.info('Volume decreased to %.2f', self.sim.audio_system.volume)
 
             elif event_type == sdl2.SDL_KEYUP:
@@ -483,8 +482,8 @@ class SDGReplayClient(ReplayClient):
                 mmot_xrel += event.motion.xrel * self.mouse_sensitivity
 
         if self.session.is_spectator(self.sim.own_player_id):
-            self.sim.cursor_y = np.clip(self.sim.cursor_y + mmot_yrel, 2., 105.)
-            self.sim.cursor_x = np.clip(self.sim.cursor_x + mmot_xrel, 66., 253.)
+            self.sim.cursor_y = max(2., min(105., self.sim.cursor_y + mmot_yrel))
+            self.sim.cursor_x = max(66., min(253., self.sim.cursor_x + mmot_xrel))
 
         if self.focus.mode == FocusTracker.MODE_WRITE and not self.paused:
             self.focus.update(mmot_yrel, mmot_xrel)

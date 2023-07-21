@@ -1,13 +1,25 @@
 import os
+from enum import IntEnum
 
 import numpy as np
 import cv2
 
 from sidegame.audio import SoundBank as SoundBankBase
-from sidegame.game import GameID
+from sidegame.game import GameID, MapID
 
 
 ASSET_DIR = os.path.dirname(__file__)
+
+
+# Mapping between world pos and map view pos
+# y: 535 to x: 90, y: 103 to x: 185 || x: 20 to y: 1, x: 603 to y: 106
+MAP_WARP = np.array((
+    ((1., 0., 0.), (0., 1., 0.)),
+    ((1., 0., 0.), (0., 1., 0.)),
+    ((1., 0., 0.), (0., 1., 0.)),
+    ((1., 0., 0.), (0., 1., 0.)),
+    ((1., 0., 0.), (0., 1., 0.)),
+    ((0., -95./432., 185. + 103.*95./432.), (105./583., 0., 1. - 105.*20./583.))))
 
 
 class Map:
@@ -16,123 +28,68 @@ class Map:
     and code references for the content of specific arrays.
     """
 
-    _MAP_REFS: dict[int, dict[str, str]] = {
-        0: {
-            'NAME': 'Cache',
-            'RADAR': os.path.join(ASSET_DIR, 'maps', 'de_cache_radar.png'),
-            'CODE': os.path.join(ASSET_DIR, 'maps', 'de_cache_code.png')}}
+    LEVEL_FILES = {MapID.LEVEL_5V5: ('de_cache_radar.png', 'de_cache_code.png')}
 
-    # TODO: Allow maps to differ in size
-    BOUNDS = (640, 640)
-
-    # Mapping between world pos and map view pos
-    # y: 535 to x: 90, y: 103 to x: 185 || x: 20 to y: 1, x: 603 to y: 106
-    MAP_WARP = np.array([[0, -95./432., 185. + 103.*95./432.], [105./583., 0, 1. - 105.*20./583.]])
-
-    # Code map channels
-    _CHANNEL_SOUND = 0
-    _CHANNEL_HEIGHT = 1
-    _CHANNEL_MARK = 2
-
-    # Sound channel codes
-    SOUND_CONCRETE = 255
-    SOUND_DIRT = 205
-    SOUND_WOOD = 155
-    SOUND_METAL = 105
-    SOUND_TILE = 55
-    SOUND_NULL = 0
-
-    # Height map codes
-    HEIGHT_GROUND = 0
-    HEIGHT_TRANSITION = 63
-    HEIGHT_ELEVATED = 127
-    HEIGHT_IMPASSABLE = 255
-
-    # Landmark channel codes
-    LANDMARK_NULL = 0
-    LANDMARK_SPAWN_T = 31
-    LANDMARK_SPAWN_CT = 63
-    LANDMARK_PLANT_A = 127
-    LANDMARK_PLANT_B = 255
-
-    # Zone map codes
-    ZONE_NULL = 0
-    ZONE_FIRE = 127
-    ZONE_SMOKE = 255
-
-    # Entity map codes (max 32728 objects and 32727 entities)
-    OBJECT_ID_NULL = 0
-    PLAYER_ID_NULL = 32767
-
-    def __init__(self, map_id: int = None, rng: np.random.Generator = None):
-        self.rng = np.random.default_rng() if rng is None else rng
-
-        if map_id is None or map_id not in self._MAP_REFS:
-            map_id = self.get_random_map_id()
-
+    def __init__(self, map_id: int = MapID.LEVEL_5V5):
         self.id = map_id
-        self.world = cv2.imread(self._MAP_REFS[map_id]['RADAR'], cv2.IMREAD_COLOR)
+        world_file, code_file = Map.LEVEL_FILES[map_id]
 
-        code_map: np.ndarray = cv2.imread(self._MAP_REFS[map_id]['CODE'], cv2.IMREAD_COLOR)
-        reference_shape: tuple[int] = code_map.shape[:2]
+        self.world = ImageBank.load({}, 'world_5v5', 'maps', world_file, mode=cv2.IMREAD_COLOR)
+        self.code_map = ImageBank.load({}, 'code_5v5', 'maps', code_file, mode=cv2.IMREAD_COLOR)
+        self.bounds = self.world.shape[:2]
 
-        self.sound = code_map[..., self._CHANNEL_SOUND]
-        self.height = code_map[..., self._CHANNEL_HEIGHT]
-        self.landmark = code_map[..., self._CHANNEL_MARK]
+        self.fx_canvas = np.empty_like(self.world)
+        self.code_map = np.concatenate((np.moveaxis(self.code_map, -1, 0), np.empty((4, *self.bounds), dtype=np.uint8)))
+        self.id_map = np.empty((4, *self.bounds), dtype=np.int16)
 
-        self.wall = np.uint8(self.height == self.HEIGHT_IMPASSABLE)
+        self.sound = self.code_map[MapID.CHANNEL_SOUND]
+        self.height = self.code_map[MapID.CHANNEL_HEIGHT]
+        self.landmark = self.code_map[MapID.CHANNEL_MARK]
+        self.wall = self.code_map[MapID.CHANNEL_WALL]
+        self.zone = self.code_map[MapID.CHANNEL_ZONE]
+        self.zone_null = self.code_map[MapID.CHANNEL_ZONE_NULL]
+        self.fx_ctr_map = self.code_map[MapID.CHANNEL_FX]
 
-        self.zone = np.empty(reference_shape, dtype=np.uint8)
-        self.zone_null = np.empty(reference_shape, dtype=np.uint8)
-        self.zone_id = np.empty(reference_shape, dtype=np.int16)
-        self.object_id = np.empty(reference_shape, dtype=np.int16)
-        self.player_id = np.empty(reference_shape, dtype=np.int16)
-        self.player_id_null = np.empty(reference_shape, dtype=np.int16)
+        self.zone_id = self.id_map[MapID.CHANNEL_ZONE_ID]
+        self.object_id = self.id_map[MapID.CHANNEL_OBJECT_ID]
+        self.player_id = self.id_map[MapID.CHANNEL_PLAYER_ID]
+        self.player_id_null = self.id_map[MapID.CHANNEL_PLAYER_ID_NULL]
+
+        self.wall[:] = np.uint8(self.height == MapID.HEIGHT_IMPASSABLE)
         self.reset()
 
-        spawn_origin_t_y, spawn_origin_t_x = np.nonzero(self.landmark == self.LANDMARK_SPAWN_T)
-        spawn_origin_ct_y, spawn_origin_ct_x = np.nonzero(self.landmark == self.LANDMARK_SPAWN_CT)
+        spawn_origin_t_y, spawn_origin_t_x = np.nonzero(self.landmark == MapID.LANDMARK_SPAWN_T)
+        spawn_origin_ct_y, spawn_origin_ct_x = np.nonzero(self.landmark == MapID.LANDMARK_SPAWN_CT)
 
-        self.spawn_origin_t = np.array([spawn_origin_t_x[0], spawn_origin_t_y[0]])
-        self.spawn_origin_ct = np.array([spawn_origin_ct_x[0], spawn_origin_ct_y[0]])
-
-    def get_random_map_id(self) -> int:
-        """Get random map id..."""
-
-        return self.rng.choice(list(self._MAP_REFS.keys()))
-
-    @classmethod
-    def get_map_id_by_name(cls, name: str) -> int | None:
-        """Get map id by name..."""
-
-        ids = [k for k in cls._MAP_REFS if cls._MAP_REFS[k]['NAME'] == name]
-
-        return ids[0] if ids else None
+        self.spawn_origin_t = np.array((spawn_origin_t_x[0], spawn_origin_t_y[0]))
+        self.spawn_origin_ct = np.array((spawn_origin_ct_x[0], spawn_origin_ct_y[0]))
 
     def reset(self):
         """Fill dynamic maps with null values."""
 
-        self.zone.fill(self.ZONE_NULL)
-        self.zone_null.fill(self.ZONE_NULL)
-        self.zone_id.fill(self.OBJECT_ID_NULL)
-        self.object_id.fill(self.OBJECT_ID_NULL)
-        self.player_id.fill(self.PLAYER_ID_NULL)
-        self.player_id_null.fill(self.PLAYER_ID_NULL)
+        self.fx_canvas.fill(0)
+        self.fx_ctr_map.fill(0)
+        self.zone.fill(MapID.ZONE_NULL)
+        self.zone_null.fill(MapID.ZONE_NULL)
+        self.zone_id.fill(MapID.OBJECT_ID_NULL)
+        self.object_id.fill(MapID.OBJECT_ID_NULL)
+        self.player_id.fill(MapID.PLAYER_ID_NULL)
+        self.player_id_null.fill(MapID.PLAYER_ID_NULL)
 
 
 class ImageBank(dict):
     COLOURS = {
         'black': np.array((0, 0, 0), dtype=np.uint8),
-        'grey': np.array([63, 63, 63], dtype=np.uint8),
+        'grey': np.array((63, 63, 63), dtype=np.uint8),
         'white': np.array((255, 255, 255), dtype=np.uint8),
         'red': np.array((0, 0, 255), dtype=np.uint8),
         'green': np.array((0, 255, 0), dtype=np.uint8),
         'blue': np.array((255, 0, 0), dtype=np.uint8),
-        'yellow': np.array([0, 255, 255], dtype=np.uint8),
-        'e_yellow': np.array([63, 191, 191], dtype=np.uint8),
-        'e_red': np.array([0, 127, 255], dtype=np.uint8),
-        't_cyan': np.array([235, 183, 0], dtype=np.uint8),
-        't_red': np.array([0, 0, 224], dtype=np.uint8),
+        'yellow': np.array((0, 255, 255), dtype=np.uint8),
+        'e_yellow': np.array((63, 191, 191), dtype=np.uint8),
+        'e_red': np.array((0, 127, 255), dtype=np.uint8),
+        't_cyan': np.array((235, 183, 0), dtype=np.uint8),
+        't_red': np.array((0, 0, 224), dtype=np.uint8),
         'o_purple': np.array((140, 80, 140), dtype=np.uint8),
         'o_red': np.array((127, 127, 191), dtype=np.uint8),
         'p_green': np.array((0, 248, 160), dtype=np.uint8),
@@ -146,6 +103,18 @@ class ImageBank(dict):
 
         # TODO: Read from fewer files and split at init
 
+        # Characters and digits
+        self.characters: dict[str, np.ndarray] = {}
+
+        for charfile in os.listdir(os.path.join(ASSET_DIR, 'characters')):
+            char = charfile.split('_')[1][:-4]
+            self.characters[char] = self.load(char, 'characters', charfile)
+
+        self.digits: tuple[np.ndarray, ...] = tuple(self.characters[str(num)] for num in range(10))
+
+        # FoV endpoints
+        self.load('endpoints', 'views', 'endpoints.png', mode=cv2.IMREAD_GRAYSCALE)
+
         # View-related
         self.load('window_base_lobby', 'views', 'lobby.png')
         self.load('window_base_world', 'views', 'main.png')
@@ -155,10 +124,10 @@ class ImageBank(dict):
         self.load('overlay_store_t', 'views', 'store_t.png')
         self.load('overlay_store_ct', 'views', 'store_ct.png')
 
-        self.load('code_view_terms', 'views', 'code_terms.png', mono=True)
-        self.load('code_view_items', 'views', 'code_items.png', mono=True)
-        self.load('code_view_store_t', 'views', 'code_store_t.png', mono=True)
-        self.load('code_view_store_ct', 'views', 'code_store_ct.png', mono=True)
+        self.load('code_view_terms', 'views', 'code_terms.png', mode=cv2.IMREAD_GRAYSCALE)
+        self.load('code_view_items', 'views', 'code_items.png', mode=cv2.IMREAD_GRAYSCALE)
+        self.load('code_view_store_t', 'views', 'code_store_t.png', mode=cv2.IMREAD_GRAYSCALE)
+        self.load('code_view_store_ct', 'views', 'code_store_ct.png', mode=cv2.IMREAD_GRAYSCALE)
 
         # Specific icons
         self.load('icon_console_pointer', 'icons', 'pointer_console.png')
@@ -166,9 +135,8 @@ class ImageBank(dict):
         self.load('icon_selected', 'icons', 'pointer_item.png')
         self.load('icon_reset', 'icons', 'phase_reset.png')
         self.load('icon_store', 'icons', 'phase_buy.png')
-        self.load('icon_kill', 'icons', 'term_kill.png')
 
-        self.load('null', 'icons', 'team_spectator.png')
+        self.load('group_spectators', 'icons', 'team_spectator.png')
         self.load('group_team_t', 'icons', 'team_t.png'),
         self.load('group_team_ct', 'icons', 'team_ct.png')
 
@@ -178,6 +146,7 @@ class ImageBank(dict):
             self.load(f'mark_t{i+1}', 'icons', f'ping_t_{i}.png')
             self.load(f'mark_ct{i+1}', 'icons', f'ping_ct_{i}.png')
 
+        self.load('term_kill', 'icons', 'term_kill.png')
         self.load('term_move', 'icons', 'term_move.png')
         self.load('term_hold', 'icons', 'term_hold.png')
         self.load('term_see', 'icons', 'term_see.png')
@@ -245,15 +214,13 @@ class ImageBank(dict):
             GameID.PLAYER_CT4: self['clr_p_purple'],
             GameID.PLAYER_CT5: self['clr_p_blue']}
 
-    def load(self, name: str, groupname: str, filename: str, mono: bool = False) -> np.ndarray:
+    def load(self, name: str, groupname: str, filename: str, mode: int = cv2.IMREAD_UNCHANGED) -> np.ndarray:
         """Wrapper around `cv2.imread` to minimise path specification."""
 
         if name in self:
             raise KeyError(f'Image associated with "{name}" already in image bank.')
 
-        img = cv2.imread(
-            os.path.join(ASSET_DIR, groupname, filename),
-            flags=cv2.IMREAD_GRAYSCALE if mono else cv2.IMREAD_UNCHANGED)
+        img = cv2.imread(os.path.join(ASSET_DIR, groupname, filename), flags=mode)
 
         self[name] = img
 
@@ -292,7 +259,7 @@ class SoundBank(SoundBankBase):
         self.movements = [self.load(f'movement_{i}', 'player', f'movement{i+1}.wav', 0.125) for i in range(3)]
 
         # Footsteps
-        terrain_keys = (Map.SOUND_CONCRETE, Map.SOUND_DIRT, Map.SOUND_WOOD, Map.SOUND_METAL, Map.SOUND_TILE)
+        terrain_keys = (MapID.SOUND_CONCRETE, MapID.SOUND_DIRT, MapID.SOUND_WOOD, MapID.SOUND_METAL, MapID.SOUND_TILE)
         terrain_names = ('concrete', 'dirt', 'wood', 'metal', 'tile')
 
         self.footsteps: dict[int, list[list[np.ndarray]]] = {}

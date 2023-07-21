@@ -1,17 +1,19 @@
 """Main and supporting methods for client-side world simulation of SDG"""
 
-from collections import deque
-from typing import Deque, Dict, List, Tuple, Union
+import math
 
 import numpy as np
+from numpy import ndarray
+from numba import jit
 
-from sidegame.assets import ImageBank, SoundBank, Map
-from sidegame.ext import sdglib
+from sidegame.assets import ImageBank, SoundBank, MapID, MAP_WARP
+from sidegame.utils_jit import vec2_norm2, vec2_rot_, fix_angle_range, get_disk_indices, F_PI2, F_2PI, RAD_DIV_DEG
 from sidegame.audio import PlanarAudioSystem as AudioSystem
-from sidegame.physics import fix_angle_range, F_2PI
-from sidegame.effects import Effect, Colour
-from sidegame.graphics import draw_image, draw_text, draw_number, draw_colour, draw_overlay, draw_muted, \
-    get_camera_warp, get_inverse_warp, project_into_view, get_view_endpoints, render_view
+from sidegame.physics import trace_sight, MAX_VIEW_RANGE
+from sidegame.effects import Effect
+from sidegame.graphics import (
+    draw_image, draw_text, draw_number, draw_colour, draw_overlay, draw_muted,
+    get_camera_warp, get_inverse_warp, warp_position, project_into_view, mask_view)
 from sidegame.game import GameID
 from sidegame.game.shared import Message, Item, Inventory, Object, Player, Session
 
@@ -28,17 +30,19 @@ class Simulation:
     WORLD_FRAME_SIZE = (192, 108)
     WORLD_BOUNDS = WORLD_FRAME_SIZE[::-1]
 
-    RING1_INDICES = (np.array([-1, 0, 0, 1], dtype=np.int16), np.array([0, -1, 1, 0], dtype=np.int16))
-    RING2_INDICES = (np.array([-1, -1, 1, 1], dtype=np.int16), np.array([-1, 1, -1, 1], dtype=np.int16))
+    RING1_INDICES = np.array((-1, 0, 0, 1)), np.array((0, -1, 1, 0))
+    RING2_INDICES = np.array((-1, -1, 1, 1)), np.array((-1, 1, -1, 1))
 
-    SPRITE_CAP_INDICES = (np.array([1, 1, 2, 2]), np.array([1, 2, 1, 2]))
-    SPRITE_AURA_INDICES = Colour.get_disk_indices(2)
-    SPRITE_AURA_INDICES = (SPRITE_AURA_INDICES[0]+1, SPRITE_AURA_INDICES[1]+1)
+    SPRITE_CAP_INDICES = np.array((1, 1, 2, 2)), np.array((1, 2, 1, 2))
+    SPRITE_AURA_INDICES = get_disk_indices(2)
+    SPRITE_AURA_INDICES = SPRITE_AURA_INDICES[0]+1, SPRITE_AURA_INDICES[1]+1
 
-    FOV_MAIN = 106.3
+    FOV_STD = 106.3
     FOV_SCOPED = 25.
+    ANGLE_LIM_STD = FOV_STD / 2. * RAD_DIV_DEG
+    ANGLE_LIM_SCOPED = FOV_SCOPED / 2. * RAD_DIV_DEG
 
-    CONSOLE_COMMANDS: Dict[str, int] = {
+    CONSOLE_COMMANDS: dict[str, int] = {
         'start': GameID.CMD_START_MATCH,
         'stop': GameID.CMD_END_MATCH,
         'quit': GameID.CMD_END_SESSION,
@@ -52,7 +56,16 @@ class Simulation:
         'add bot': GameID.CMD_ADD_BOT,
         'kick name': GameID.CMD_KICK_NAME}
 
-    DEFAULT_OBS = (np.Inf, Map.PLAYER_ID_NULL, GameID.NULL)
+    DEFAULT_OBS = (np.inf, MapID.PLAYER_ID_NULL, GameID.NULL)
+
+    EQUIPMENT_DRAW_PARAMS = (
+        (Item.SLOT_PRIMARY, 112, 187),
+        (Item.SLOT_PISTOL, 112, 205),
+        (Item.SLOT_OTHER, 112, 241),
+        (Item.SLOT_UTILITY + Item.SUBSLOT_FLASH, 128, 187),
+        (Item.SLOT_UTILITY + Item.SUBSLOT_EXPLOSIVE, 128, 205),
+        (Item.SLOT_UTILITY + Item.SUBSLOT_INCENDIARY, 128, 223),
+        (Item.SLOT_UTILITY + Item.SUBSLOT_SMOKE, 128, 241))
 
     def __init__(
         self,
@@ -60,18 +73,18 @@ class Simulation:
         tick_rate: float,
         audio_device: int = 0,
         session: Session = None,
-        assets: tuple[ImageBank, SoundBank, Map, Inventory] = None
+        assets: tuple[ImageBank, SoundBank, Inventory] = None
     ):
         self.session = Session() if session is None else session
+        self.map = self.session.map
 
         if assets is None:
             self.images = ImageBank()
             self.sounds = SoundBank(tick_rate)
-            self.map = Map(0, session.rng)
             self.inventory = Inventory(self.images, self.sounds.item_sounds)
 
         else:
-            self.images, self.sounds, self.map, self.inventory = assets
+            self.images, self.sounds, self.inventory = assets
 
         self.audio_system = AudioSystem(
             step_freq=tick_rate,
@@ -80,7 +93,7 @@ class Simulation:
             base_volume=self.AUDIO_BASE_VOLUME,
             out_device_idx=audio_device)
 
-        self.effects: Dict[int, Effect] = {}
+        self.effects: dict[int, Effect] = {}
         self.own_player_id = own_player_id
         self.observed_player_id = own_player_id
         self.observer_lock_time = 0.
@@ -88,8 +101,8 @@ class Simulation:
         self.cursor_y, self.cursor_x = self.WORLD_FRAME_CENTRE
         self.wheel_y = 0
         self.console_text = ''
-        self.message_draft: Deque[Tuple[int, float]] = deque()
-        self.chat: List[Message] = []
+        self.message_draft: list[tuple[int, float]] = []
+        self.chat: list[Message] = []
         self.view: int = GameID.VIEW_LOBBY
 
         # View-related
@@ -98,16 +111,22 @@ class Simulation:
         self.code_view_store_t = self.images['code_view_store_t']
         self.code_view_store_ct = self.images['code_view_store_ct']
 
-        self.last_world_frame: np.ndarray = None
-        self.null_entity_map = np.empty(Map.BOUNDS, dtype=np.int16)
-        self.null_entity_map.fill(Map.PLAYER_ID_NULL)
-        self.null_zone_map = np.zeros(Map.BOUNDS, dtype=np.uint8)
-        self.fx_map = np.zeros(Map.BOUNDS, dtype=np.uint8)
-        self.fx_canvas = np.zeros((*Map.BOUNDS, 3), dtype=np.uint8)
+        self.overlay_terms = self.images['overlay_terms']
+        self.overlay_items = self.images['overlay_items']
+        self.overlay_store_t = self.images['overlay_store_t']
+        self.overlay_store_ct = self.images['overlay_store_ct']
+        self.overlay_mapstats = self.images['overlay_mapstats']
 
-        self.line_sight_indices = (np.arange(0, 106), np.repeat(64 + 96, 106))
-        self.standard_fov_endpoints = get_view_endpoints(self.FOV_MAIN, 108.)
-        self.scoped_fov_endpoints = get_view_endpoints(self.FOV_SCOPED, 108.)
+        self.window_base_world = self.images['window_base_world']
+        self.window_base_lobby = self.images['window_base_lobby']
+
+        self.last_world_frame: ndarray = None
+        self.fx_canvas = self.map.fx_canvas
+        self.fx_ctr_map = self.map.fx_ctr_map
+
+        self.line_sight_indices = np.arange(0, 106), np.repeat(64 + 96, 106)
+        self.standard_fov_endpoints = self.get_view_endpoints(self.FOV_STD, 108.)
+        self.scoped_fov_endpoints = self.get_view_endpoints(self.FOV_SCOPED, 108.)
 
         # Sound bank
         self.movements = self.sounds.movements
@@ -115,24 +134,67 @@ class Simulation:
         self.footsteps = self.sounds.footsteps
 
         # Image bank
+        self.icon_console_pointer = self.images['icon_console_pointer']
+        self.icon_cursor = self.images['icon_cursor']
+        self.icon_selected = self.images['icon_selected']
+        self.icon_reset = self.images['icon_reset']
+        self.icon_store = self.images['icon_store']
+        self.icon_kill = self.images['term_kill']
+        self.icon_c4 = self.images['item_c4']
+        self.icon_placeholder = self.images['term_stop']
+
+        self.characters = self.images.characters
+        self.digits = self.images.digits
         self.addressable_icons = self.images.id_icons
         self.colours = self.images.COLOURS
         self.player_colours = self.images.player_colours
         self.other_colours = self.images.other_colours
         self.sprites = self.images.sprites
 
-    def get_cursor_obs_from_code_view(self, code_view: np.ndarray) -> int:
+    def get_view_endpoints(self, fov_deg: float, radius: float) -> tuple[ndarray, ...]:
+        """
+        Given a field of view and limited radius, get the endpoints for rays that
+        define the viewable area.
+        """
+
+        assert fov_deg <= 180., f'Max. field of view range exceeded: {fov_deg:.2f}'
+
+        # Get endpoint image source
+        endpoint_image = self.images['endpoints']
+
+        # Convert FOV to radians
+        fov_rad = fov_deg * RAD_DIV_DEG
+
+        # Mask away the endpoints below the bottom threshold determined by FOV
+        threshold_y = math.ceil(radius * (1. - math.cos(fov_rad/2.)))
+        endpoint_image[threshold_y:] = 0
+
+        # Split the image into left and right halves
+        left_half_image, right_half_image = np.hsplit(endpoint_image, 2)
+
+        # Get endpoints (indices)
+        left_half_idy, left_half_idx = np.nonzero(left_half_image)
+        right_half_idy, right_half_idx = np.nonzero(right_half_image)
+
+        # Correct right half indices after splitting
+        right_half_idx += endpoint_image.shape[1] // 2
+
+        return left_half_idy, left_half_idx, right_half_idy, right_half_idx
+
+    def get_cursor_obs_from_code_view(self, code_view: ndarray) -> int:
         """Get the ID corresponding to the position above which the cursor is hovering."""
+
         return code_view[round(self.cursor_y), round(self.cursor_x)-64]
 
-    def draw_cursor_obs_from_code_view(self, window: np.ndarray, code_view: np.ndarray):
+    def draw_cursor_obs_from_code_view(self, window: ndarray, code_view: ndarray):
         """Draw the icon of the observed term or item lying under the cursor."""
+
         obs_id = self.get_cursor_obs_from_code_view(code_view)
 
         if obs_id:
             draw_image(window, self.addressable_icons[obs_id], 112, 85)
 
-    def get_cursor_obs_from_world_view(self) -> Tuple[float, int, int]:
+    def get_cursor_obs_from_world_view(self) -> tuple[float, int, int]:
         """
         Get the IDs corresponding to the entity above which the cursor is
         roughly hovering (along with the distance to the cursor).
@@ -144,12 +206,12 @@ class Simulation:
             return self.DEFAULT_OBS
 
         # Transform cursor to world frame (rather than the other way around)
-        cursor_dist = Player.MAX_VIEW_RANGE - self.cursor_y
-        cursor_pos = player.pos + np.array([np.cos(player.angle), np.sin(player.angle)]) * cursor_dist
+        cursor_dist = MAX_VIEW_RANGE - self.cursor_y
+        cursor_pos = player.pos + np.array((math.cos(player.angle), math.sin(player.angle))) * cursor_dist
 
         # Iter over players, get argmin wrt. cursor position
         closest_player_obs = min((
-            (np.linalg.norm(a_player.pos - cursor_pos), a_player.id, a_player.position_id)
+            (vec2_norm2(a_player.pos - cursor_pos), a_player.id, a_player.position_id)
             for a_player in self.session.players.values() if a_player.team != GameID.GROUP_SPECTATORS
             and self.check_los(player, a_player)),
             default=self.DEFAULT_OBS)
@@ -157,9 +219,9 @@ class Simulation:
         # Iter over objects, get argmin wrt. cursor position
         # NOTE: For the sake of gameplay, C4 can be seen through smoke zones
         closest_object_obs = min((
-            (np.linalg.norm(an_object.pos - cursor_pos), an_object.id, an_object.item.id)
+            (vec2_norm2(an_object.pos - cursor_pos), an_object.id, an_object.item.id)
             for an_object in self.session.objects.values()
-            if (an_object.lifetime == np.Inf and self.check_los(player, an_object))
+            if (an_object.lifetime == np.inf and self.check_los(player, an_object))
             or (an_object.item.id == GameID.ITEM_C4 and self.check_los(player, an_object, ignore_zone=True))),
             default=self.DEFAULT_OBS)
 
@@ -170,49 +232,34 @@ class Simulation:
         # Check if distance to cursor is valid
         return self.DEFAULT_OBS if closest_dist > 3. else closest_obs
 
-    def draw_cursor_obs_from_world_view(self, window: np.ndarray):
+    def draw_cursor_obs_from_world_view(self, window: ndarray):
         """Draw the icon of the observed entity lying roughly under the cursor."""
+
         _, _, closest_id = self.get_cursor_obs_from_world_view()
 
         if closest_id:
             draw_image(window, self.addressable_icons[closest_id], 112, 85)
 
-    def draw_focus_line(self, window: np.ndarray):
+    def draw_focus_line(self, window: ndarray):
         """Trace a green ray to the farthest unobscured point directly in front of the player."""
+
         player: Player = self.session.players[self.own_player_id]
-        map_: Map = self.session.map
+        map_ = self.map
 
         if not player.health:
             return
 
-        endpoint = player.get_focal_point(map_.height, map_.player_id, map_.zone, max_range=Player.MAX_VIEW_RANGE)
+        endpoint = player.get_focal_point(map_.wall, map_.zone, map_.player_id, max_range=MAX_VIEW_RANGE)
 
         # Use preset indices up to threshold index
         if any(endpoint):
-            thr_idx = round(Player.MAX_VIEW_RANGE - np.linalg.norm(endpoint - player.pos))
+            thr_idx = round(MAX_VIEW_RANGE - vec2_norm2(endpoint - player.pos))
             line_sight_indices = self.line_sight_indices[0][thr_idx:], self.line_sight_indices[1][thr_idx:]
 
         else:
             line_sight_indices = self.line_sight_indices
 
-        draw_colour(window, line_sight_indices, self.images['clr_green'], opacity=0.1)
-
-    def draw_carried_item(self, window: np.ndarray, obj: Object, pos_y: int, pos_x: int):
-        """Draw the item icon of a carried object."""
-        if obj is not None:
-            draw_image(window, obj.item.icon, pos_y, pos_x)
-
-    def get_relative_sprite_index(self, observer: Player, player: Player) -> Tuple[float]:
-        """Get index from 0 to (incl.) 15 corresponding to a sprite with the angle as seen by the observer."""
-
-        rel_angle = fix_angle_range(player.angle - observer.angle)
-
-        if rel_angle < 0.:
-            rel_angle += F_2PI
-
-        rel_angle *= 16. / F_2PI
-
-        return round(rel_angle) if rel_angle < 15.5 else 0
+        draw_colour(window, line_sight_indices, self.colours['green'], opacity=0.1)
 
     def eval_effects(self, dt: float):
         """Iterate over all active effects and step them, clearing those that expire."""
@@ -234,11 +281,17 @@ class Simulation:
 
         for key, effect in expired_effects:
             if effect.type == Effect.TYPE_COLOUR:
-                self.fx_map[effect.world_indices] -= 1
+                self.fx_ctr_map[effect.world_indices] -= 1
 
             del self.effects[key]
 
-    def get_frame(self) -> np.ndarray:
+    def clear_effects(self):
+        """Reset buffer, canvas, and counter map."""
+
+        self.effects.clear()
+        self.fx_ctr_map.fill(0)
+
+    def get_frame(self) -> ndarray:
         """Get the image corresponding to the current frame."""
 
         # Draw window content
@@ -256,13 +309,13 @@ class Simulation:
 
                 # Add view overlay according to observed player and view
                 if self.view == GameID.VIEW_TERMS:
-                    window[:108, 64:] = draw_overlay(window[:108, 64:], self.images['overlay_terms'], opacity=0.65)
+                    window[:108, 64:] = draw_overlay(window[:108, 64:], self.overlay_terms, opacity=0.65)
 
                     # Draw hovered term
                     self.draw_cursor_obs_from_code_view(window, self.code_view_terms)
 
                 elif self.view == GameID.VIEW_ITEMS:
-                    window[:108, 64:] = draw_overlay(window[:108, 64:], self.images['overlay_items'], opacity=0.65)
+                    window[:108, 64:] = draw_overlay(window[:108, 64:], self.overlay_items, opacity=0.65)
 
                     # Draw hovered item
                     self.draw_cursor_obs_from_code_view(window, self.code_view_items)
@@ -273,13 +326,13 @@ class Simulation:
                     # Draw hovered item
                     if player.team == GameID.GROUP_TEAM_T:
                         window[:108, 64:] = draw_overlay(
-                            window[:108, 64:], self.images['overlay_store_t'], opacity=0.65)
+                            window[:108, 64:], self.overlay_store_t, opacity=0.65)
 
                         self.draw_cursor_obs_from_code_view(window, self.code_view_store_t)
 
                     else:
                         window[:108, 64:] = draw_overlay(
-                            window[:108, 64:], self.images['overlay_store_ct'], opacity=0.65)
+                            window[:108, 64:], self.overlay_store_c, opacity=0.65)
 
                         self.draw_cursor_obs_from_code_view(window, self.code_view_store_ct)
 
@@ -295,58 +348,62 @@ class Simulation:
 
         # Draw cursor
         # NOTE: Cursor values are enforced to lie within valid range when they are externally updated
-        draw_image(window, self.images['icon_cursor'], round(self.cursor_y)-2, round(self.cursor_x)-2)
+        draw_image(window, self.icon_cursor, round(self.cursor_y)-2, round(self.cursor_x)-2)
 
         return window
 
-    def lobby(self) -> np.ndarray:
+    def lobby(self) -> ndarray:
         """Draw the console and players connected to the session."""
-        window: np.ndarray = self.images['window_base_lobby'].copy()
+
+        window: ndarray = self.window_base_lobby.copy()
+        null_char = self.characters['null']
 
         # Display game status
-        draw_text(window, 'in match' if self.session.phase else 'waiting to start', 2, 142)
+        draw_text(window, self.characters, null_char, 'in match' if self.session.phase else 'waiting to start', 2, 142)
 
         # Draw spectators
         for i, player in enumerate(self.session.spectators.values()):
             pos_y = 12 + i*8
-            draw_number(window, player.id, pos_y, 4)
-            draw_image(window, self.addressable_icons[GameID.NULL], pos_y - 3, 7)
-            draw_text(window, player.name, pos_y, 19)
+            draw_number(window, self.digits, player.id, pos_y, 4)
+            draw_image(window, self.addressable_icons[GameID.GROUP_SPECTATORS], pos_y - 3, 7)
+            draw_text(window, self.characters, null_char, player.name, pos_y, 19)
 
         # Draw Ts
         for i, player in enumerate(self.session.players_t.values()):
             pos_y = 40 + i*8
-            draw_number(window, player.id, pos_y, 138)
+            draw_number(window, self.digits, player.id, pos_y, 138)
             draw_image(window, self.addressable_icons[player.position_id], pos_y - 4, 144)
-            draw_text(window, player.name, pos_y, 108)
+            draw_text(window, self.characters, null_char, player.name, pos_y, 108)
 
         # Draw CTs
         for i, player in enumerate(self.session.players_ct.values()):
             pos_y = 40 + i*8
-            draw_number(window, player.id, pos_y, 183)
+            draw_number(window, self.digits, player.id, pos_y, 183)
             draw_image(window, self.addressable_icons[player.position_id], pos_y - 4, 164)
-            draw_text(window, player.name, pos_y, 190)
+            draw_text(window, self.characters, null_char, player.name, pos_y, 190)
 
         # Draw console
-        draw_text(window, self.console_text, 128, 69, spacing=3)
-        draw_image(window, self.images['icon_console_pointer'], 124, 69 + min(len(self.console_text), 22)*8)
+        draw_text(window, self.characters, null_char, self.console_text, 128, 69, spacing=3)
+        draw_image(window, self.icon_console_pointer, 124, 69 + min(len(self.console_text), 22)*8)
 
         return window
 
-    def main(self) -> np.ndarray:
+    def main(self) -> ndarray:
         """Draw the main HUD with information on current inventory, chat, and match state."""
-        window = self.images['window_base_world'].copy()
+
+        window = self.window_base_world.copy()
+        digits = self.digits
+        addressable_icons = self.addressable_icons
+
         player: Player = self.session.players[self.own_player_id]
-        slots: List[Union[Object, None]] = player.slots
+        slots: list[Object | None] = player.slots
 
         # Draw equipped inventory
-        self.draw_carried_item(window, slots[Item.SLOT_PRIMARY], 112, 187)
-        self.draw_carried_item(window, slots[Item.SLOT_PISTOL], 112, 205)
-        self.draw_carried_item(window, slots[Item.SLOT_OTHER], 112, 241)
-        self.draw_carried_item(window, slots[Item.SLOT_UTILITY + Item.SUBSLOT_FLASH], 128, 187)
-        self.draw_carried_item(window, slots[Item.SLOT_UTILITY + Item.SUBSLOT_EXPLOSIVE], 128, 205)
-        self.draw_carried_item(window, slots[Item.SLOT_UTILITY + Item.SUBSLOT_INCENDIARY], 128, 223)
-        self.draw_carried_item(window, slots[Item.SLOT_UTILITY + Item.SUBSLOT_SMOKE], 128, 241)
+        for slot_idx, pos_y, pos_x in self.EQUIPMENT_DRAW_PARAMS:
+            obj = slots[slot_idx]
+
+            if obj is not None:
+                draw_image(window, obj.item.icon, pos_y, pos_x)
 
         # Draw frame around held (selected) item
         held_object = player.held_object
@@ -358,56 +415,59 @@ class Simulation:
             pos_y = 110 if slot != Item.SLOT_UTILITY else 126
             pos_x = 185 + 18 * ((slot-1) if slot != Item.SLOT_UTILITY else subslot)
 
-            draw_image(window, self.images['icon_selected'], pos_y, pos_x)
+            draw_image(window, self.icon_selected, pos_y, pos_x)
 
         # Display health, armour, money
         if player.health and player.team != GameID.GROUP_SPECTATORS:
-            draw_number(window, round(player.health), 137, 75)
+            draw_number(window, digits, round(player.health), 137, 75)
 
         armour = slots[Item.SLOT_ARMOUR]
 
         if armour is not None:
-            draw_number(window, round(armour.durability), 137, 93)
+            draw_number(window, digits, round(armour.durability), 137, 93)
 
-        draw_number(window, player.money, 120, 129)
+        draw_number(window, digits, player.money, 120, 129)
 
         # Display magazine (or reloading/drawing or carried utility) and reserve
         if held_object is not None:
             if player.time_until_drawn or player.time_to_reload:
-                draw_image(window, self.images['icon_reset'], 129, 125)
+                draw_image(window, self.icon_reset, 129, 125)
+
             elif held_object.item.magazine_cap:
-                draw_number(window, held_object.magazine, 129, 129)
+                draw_number(window, digits, held_object.magazine, 129, 129)
+
             elif held_object.item.id != GameID.ITEM_KNIFE and held_object.item.slot != Item.SLOT_OTHER:
-                draw_number(window, held_object.carrying, 129, 129)
+                draw_number(window, digits, held_object.carrying, 129, 129)
 
             if held_object.item.reserve_cap:
-                draw_number(window, held_object.reserve, 137, 129)
+                draw_number(window, digits, held_object.reserve, 137, 129)
 
         # Display match state
         session = self.session
         phase = session.phase
+        current_round = session.rounds_won_t + session.rounds_won_ct + (1 if phase != GameID.PHASE_RESET else 0)
 
-        draw_number(window, session.rounds_won_t, 119, 150)
-        draw_number(window, session.rounds_won_ct, 119, 169)
-        draw_number(
-            window,
-            session.rounds_won_t + session.rounds_won_ct + (1 if phase != GameID.PHASE_RESET else 0),
-            130, 166)
-        draw_number(window, int(session.time // 60.), 138, 162)
-        draw_number(window, int(session.time % 60.), 138, 172, min_n_digits=2)
+        draw_number(window, digits, session.rounds_won_t, 119, 150)
+        draw_number(window, digits, session.rounds_won_ct, 119, 169)
+        draw_number(window, digits, current_round, 130, 166)
+        draw_number(window, digits, int(session.time // 60.), 138, 162)
+        draw_number(window, digits, int(session.time % 60.), 138, 172, min_n_digits=2)
 
         if phase == GameID.PHASE_BUY:
-            draw_image(window, self.images['icon_store'], 134, 148)
+            draw_image(window, self.icon_store, 134, 148)
+
         elif phase == GameID.PHASE_DEFUSE:
-            draw_image(window, self.inventory.c4.icon, 130, 144)
+            draw_image(window, self.icon_c4, 130, 144)
+
         elif phase == GameID.PHASE_RESET:
-            draw_image(window, self.images['icon_reset'], 134, 148)
+            draw_image(window, self.icon_reset, 134, 148)
 
         # Display own icon
         if player.team == GameID.GROUP_SPECTATORS:
-            draw_image(window, self.addressable_icons[GameID.NULL], 116, 67)
+            draw_image(window, addressable_icons[GameID.GROUP_SPECTATORS], 116, 67)
+
         else:
-            draw_image(window, self.addressable_icons[player.position_id], 116, 67)
+            draw_image(window, addressable_icons[player.position_id], 116, 67)
 
         # Display chat
         # NOTE: The scroll wheel update enforces its range between `0` and `len(self.chat)-5`
@@ -416,33 +476,36 @@ class Simulation:
         pos_x = 4
 
         for message in chat:
-            draw_number(window, message.round, pos_y, pos_x)
-            draw_number(window, int(message.time // 60.), pos_y, pos_x + 12)
-            draw_number(window, int(message.time % 60.), pos_y, pos_x + 22, min_n_digits=2)
-            draw_image(window, self.addressable_icons[message.position_id], pos_y - 3, pos_x + 45)
+            draw_number(window, digits, message.round, pos_y, pos_x)
+            draw_number(window, digits, int(message.time // 60.), pos_y, pos_x + 12)
+            draw_number(window, digits, int(message.time % 60.), pos_y, pos_x + 22, min_n_digits=2)
+            draw_image(window, addressable_icons[message.position_id], pos_y - 3, pos_x + 45)
 
             for i, word in enumerate(message.words):
                 if not word:
                     break
 
-                draw_image(window, self.addressable_icons[word], pos_y + 8, pos_x - 3 + 16*i)
+                draw_image(window, addressable_icons[word], pos_y + 8, pos_x - 3 + 16*i)
 
             pos_y += 24
 
         # Add scrollbar
-        width = int(np.ceil(min(5, len(self.chat)) / max(len(self.chat), 1) * 63))
+        width = int(math.ceil(min(5, len(self.chat)) / max(len(self.chat), 1) * 63))
         offset = int(self.wheel_y / max(len(self.chat), 1) * 63)
         window[121:123, offset:offset+width] = 127
 
         # Display current message draft
         for i, (word, _, _) in enumerate(self.message_draft):
-            draw_image(window, self.addressable_icons[word], 128, 1 + 16*i)
+            draw_image(window, addressable_icons[word], 128, 1 + 16*i)
 
         return window
 
-    def mapstats(self, window: np.ndarray) -> np.ndarray:
+    def mapstats(self, window: ndarray) -> ndarray:
         """Draw player positions on the map besides player statistics."""
-        window[:108, 64:] = self.images['overlay_mapstats']
+
+        window[:108, 64:] = self.overlay_mapstats
+        digits = self.digits
+        addressable_icons = self.addressable_icons
 
         player = self.session.players[self.observed_player_id]
         own_player = self.session.players.get(self.own_player_id, None)
@@ -464,29 +527,31 @@ class Simulation:
         # Draw stat table
         for i, (kdr, pos_id, health, money) in enumerate(stats_t):
             if not health:
-                draw_image(window, self.images['icon_kill'], 6 + i*9, 67)
+                draw_image(window, self.icon_kill, 6 + i*9, 67)
 
-            draw_image(window, self.addressable_icons[pos_id], 6 + i*9, 83)
-            draw_number(window, int(kdr), 10 + i*9, 104)
-            draw_number(window, int(10*(kdr - int(kdr))), 10 + i*9, 110)
+            draw_image(window, addressable_icons[pos_id], 6 + i*9, 83)
+            draw_number(window, digits, int(kdr), 10 + i*9, 104)
+            draw_number(window, digits, int(10*(kdr - int(kdr))), 10 + i*9, 110)
 
             if observer_team != GameID.GROUP_TEAM_CT:
                 draw_number(window, money, 10 + i*9, 138)
 
         for i, (kdr, pos_id, health, money) in enumerate(stats_ct):
             if not health:
-                draw_image(window, self.images['icon_kill'], 60 + i*9, 67)
+                draw_image(window, self.icon_kill, 60 + i*9, 67)
 
-            draw_image(window, self.addressable_icons[pos_id], 61 + i*9, 83)
-            draw_number(window, int(kdr), 65 + i*9, 104)
-            draw_number(window, int(10*(kdr - int(kdr))), 65 + i*9, 110)
+            draw_image(window, addressable_icons[pos_id], 61 + i*9, 83)
+            draw_number(window, digits, int(kdr), 65 + i*9, 104)
+            draw_number(window, digits, int(10*(kdr - int(kdr))), 65 + i*9, 110)
 
             if observer_team != GameID.GROUP_TEAM_T:
-                draw_number(window, money, 65 + i*9, 138)
+                draw_number(window, digits, money, 65 + i*9, 138)
 
         # Transform global coordinates into map view coordinates
+        map_warp = MAP_WARP[self.map.id]
+
         player_pos_id = [
-            (np.dot(Map.MAP_WARP, (*a_player.pos, 1.)) + (64, 0), a_player.position_id, a_player.health)
+            (warp_position(map_warp, a_player.pos) + (64, 0), a_player.position_id, a_player.health)
             for a_player in self.session.players.values() if a_player.team == player.team]
 
         # Pings already in map view coordinates
@@ -508,9 +573,11 @@ class Simulation:
             if not health:
                 window[ring1_indices] = np.uint8(self.other_colours['dead'] * 0.6 + window[ring1_indices] * 0.4)
                 window[ring2_indices] = np.uint8(self.other_colours['dead'] * 0.3 + window[ring2_indices] * 0.7)
+
             elif pos_id == player.position_id:
                 window[ring1_indices] = np.uint8(self.other_colours['self'] * 0.6 + window[ring1_indices] * 0.4)
                 window[ring2_indices] = np.uint8(self.other_colours['self'] * 0.3 + window[ring2_indices] * 0.7)
+
             else:
                 window[ring1_indices] = np.uint8(self.player_colours[pos_id] * 0.6 + window[ring1_indices] * 0.4)
                 window[ring2_indices] = np.uint8(self.player_colours[pos_id] * 0.3 + window[ring2_indices] * 0.7)
@@ -529,31 +596,34 @@ class Simulation:
             # Iter over players, get argmin wrt. cursor position
             if player_pos_id:
                 closest_player = min(
-                    (np.linalg.norm(pos - (self.cursor_x, self.cursor_y)), pos_id)
+                    (vec2_norm2(pos - (self.cursor_x, self.cursor_y)), pos_id)
                     for pos, pos_id, _ in player_pos_id)
             else:
-                closest_player = (np.Inf, None)
+                closest_player = (np.inf, None)
 
             # Iter over pings, get argmin wrt. cursor position
             if ping_pos_id:
                 closest_ping = min(
-                    (np.linalg.norm(np.array(pos) - (self.cursor_x, self.cursor_y)), pos_id)
+                    (vec2_norm2(np.array(pos) - (self.cursor_x, self.cursor_y)), pos_id)
                     for pos, pos_id, _, _ in ping_pos_id)
             else:
-                closest_ping = (np.Inf, None)
+                closest_ping = (np.inf, None)
 
             # Get argmin of both
             closest_dist, closest_id = min(closest_player, closest_ping)
 
             if closest_dist < 3.:
-                draw_image(window, self.addressable_icons[closest_id], 112, 85)
+                draw_image(window, addressable_icons[closest_id], 112, 85)
 
         return window
 
-    def world(self, window: np.ndarray) -> np.ndarray:
+    def world(self, window: ndarray) -> ndarray:
         """Draw the in-game world with players, objects, and effects in line of sight."""
-        player = self.session.players[self.observed_player_id]
-        map_ = self.session.map
+
+        players = self.session.players
+        player = players[self.observed_player_id]
+        map_ = self.map
+        world_map = map_.world
 
         # Get recoil-affected position and angle
         # NOTE: Recoil (moving viewpoint/origin) can cause the own sprite to
@@ -561,54 +631,46 @@ class Simulation:
         # (but it looks natural enough if only negative position offsets are used)
         pos = tuple(player.pos)
         origin = tuple(player.d_pos_recoil + self.WORLD_FRAME_ORIGIN)
-        angle = player.angle + np.pi/2. + player.d_angle_recoil
+        angle = player.angle + F_PI2 + player.d_angle_recoil
 
         # Transform world into local frame wrt. observed entity
-        world = project_into_view(map_.world, pos, angle, origin, self.WORLD_FRAME_SIZE)
+        world = project_into_view(world_map, pos, angle, origin, self.WORLD_FRAME_SIZE)
 
         # To transform inhabiting effects, objects, and players, their positions need to be warped, as well
         world_warp = get_camera_warp(pos, angle, origin)
         inv_warp = get_inverse_warp(pos, angle, origin)
 
         # Hide information from dead observed player
-        dead_observant = not player.health and not self.session.is_spectator(self.own_player_id)
+        observed_alive = player.health or self.session.is_spectator(self.own_player_id)
 
-        if dead_observant:
-            entity_map = self.null_entity_map
-            zone_map = self.null_zone_map
-            fx_map = self.null_zone_map
+        # Iter over colour effects
+        if observed_alive:
+            map_bounds = map_.bounds
 
-        else:
-            entity_map = map_.player_id
-            zone_map = map_.zone
-            fx_map = self.fx_map
-
-            # Iter over colour effects
             for effect in self.effects.values():
                 if effect.type == Effect.TYPE_COLOUR:
                     draw_colour(
                         self.fx_canvas, effect.world_indices, effect.colour, effect.opacity,
-                        bounds=Map.BOUNDS, background=map_.world)
+                        bounds=map_bounds, background=world_map)
 
         # Draw effects and render view mask
         # Differentiate between normal and scoped endpoints wrt. held item
-        if self.observed_player_id == self.own_player_id \
-                and player.held_object is not None and player.held_object.item.scoped:
-            view_mask = render_view(
-                world, map_.height, entity_map, zone_map, fx_map, self.fx_canvas,
-                inv_warp, self.scoped_fov_endpoints, observer_id=player.id)
-        else:
-            view_mask = render_view(
-                world, map_.height, entity_map, zone_map, fx_map, self.fx_canvas,
-                inv_warp, self.standard_fov_endpoints, observer_id=player.id)
+        endpoints = (
+            self.scoped_fov_endpoints
+            if player.held_object is not None and player.held_object.item.scoped
+            else self.standard_fov_endpoints)
+
+        view_mask = mask_view(
+            player.id if observed_alive else MapID.PLAYER_ID_NULL,
+            map_.code_map, map_.id_map, self.fx_canvas, world, inv_warp, endpoints)
 
         # Draw sprites etc.
         # NOTE: 1.03125 is used (instead of 1.) to round down the observed player position after warp to proper place
 
         # Draw dead players
-        for a_player in self.session.players.values():
+        for a_player in players.values():
             if not a_player.health and self.check_los(player, a_player):
-                pos_x, pos_y = np.dot(world_warp, (*a_player.pos, 1.))
+                pos_x, pos_y = warp_position(world_warp, a_player.pos)
                 pos_x, pos_y = round(pos_x - 1.03125), round(pos_y - 1.03125)
                 sprite = self.sprites[a_player.team, -1]
 
@@ -619,8 +681,8 @@ class Simulation:
 
         # Draw persistent objects (with infinite lifetime)
         for an_object in self.session.objects.values():
-            if an_object.lifetime == np.Inf and self.check_los(player, an_object):
-                pos_x, pos_y = np.dot(world_warp, (*an_object.pos, 1.))
+            if an_object.lifetime == np.inf and self.check_los(player, an_object):
+                pos_x, pos_y = warp_position(world_warp, an_object.pos)
                 pos_x, pos_y = round(pos_x), round(pos_y)
 
                 if 0 <= pos_y <= 107 and 0 <= pos_x <= 191:
@@ -635,11 +697,11 @@ class Simulation:
                         world[ring2_indices] = np.uint8(self.other_colours['obj_reg']*0.3 + world[ring2_indices]*0.7)
 
         # Draw alive players
-        for a_player in self.session.players.values():
+        for a_player in players.values():
             if a_player.health and self.check_los(player, a_player):
-                pos_x, pos_y = np.dot(world_warp, (*a_player.pos, 1.))
+                pos_x, pos_y = warp_position(world_warp, a_player.pos)
                 pos_x, pos_y = round(pos_x - 1.03125), round(pos_y - 1.03125)
-                angle = self.get_relative_sprite_index(player, a_player)
+                angle = get_relative_sprite_index(player.angle, a_player.angle)
                 sprite = self.sprites[a_player.team, angle]
 
                 draw_image(world, sprite, pos_y, pos_x)
@@ -649,8 +711,8 @@ class Simulation:
 
         # Draw transient objects (with finite lifetime)
         for an_object in self.session.objects.values():
-            if an_object.lifetime != np.Inf and self.check_los(player, an_object):
-                pos_x, pos_y = np.dot(world_warp, (*an_object.pos, 1.))
+            if an_object.lifetime != np.inf and self.check_los(player, an_object):
+                pos_x, pos_y = warp_position(world_warp, an_object.pos)
                 pos_x, pos_y = round(pos_x), round(pos_y)
 
                 if 0 <= pos_y <= 107 and 0 <= pos_x <= 191:
@@ -668,22 +730,16 @@ class Simulation:
         self.last_world_frame = world
 
         # Mask with visibility factors
-        view_mask = (view_mask.astype(np.float32) + 4.) / 8.
-        world = world.astype(np.float32)
-
-        world = (view_mask[..., None] * world).astype(np.uint8)
+        world = (view_mask[..., None] * world.astype(np.float32)).astype(np.uint8)
 
         # Draw overlays
-        if not dead_observant:
+        if observed_alive:
             for effect in self.effects.values():
                 if effect.type == Effect.TYPE_OVERLAY:
                     world = draw_overlay(world, effect.overlay, effect.opacity)
 
         # Draw muted if own player is dead
-        if self.observed_player_id != self.own_player_id:
-            own_player = self.session.players[self.own_player_id]
-        else:
-            own_player = player
+        own_player = player if self.observed_player_id == self.own_player_id else players[self.own_player_id]
 
         if not own_player.health and own_player.team != GameID.GROUP_SPECTATORS:
             world = draw_muted(world)
@@ -695,9 +751,8 @@ class Simulation:
     def check_los(
         self,
         observer: Player,
-        entity: Union[Object, Player],
-        ignore_zone: bool = False,
-        ignore_players: bool = True
+        entity: Object | Player,
+        ignore_zone: bool = False
     ) -> bool:
         """
         Confirm line of sight from the observing player to an entity
@@ -721,43 +776,29 @@ class Simulation:
         entity_pos = entity.pos
 
         # Check distance
-        if np.linalg.norm(observer_pos - entity_pos) > Player.MAX_VIEW_RANGE:
+        if vec2_norm2(observer_pos - entity_pos) > MAX_VIEW_RANGE:
             return False
 
         # Check angle
-        recentred_entity_pos = entity_pos - observer_pos
-        angle = -observer.angle
+        relative_x, relative_y = vec2_rot_(entity_pos - observer_pos, -observer.angle)
+        relative_angle = math.atan2(-relative_y, relative_x)
 
-        rotmat = np.array([
-            [np.cos(angle), -np.sin(angle)],
-            [np.sin(angle), np.cos(angle)]])
-
-        relative_x, relative_y = np.dot(rotmat, recentred_entity_pos)
-        relative_angle = np.arctan2(-relative_y, relative_x)
-
-        if isinstance(entity, Player) and (entity.held_object is not None and observer.held_object.item.scoped):
-            angle_lim = self.FOV_SCOPED / 2. * np.pi / 180.
-        else:
-            angle_lim = self.FOV_MAIN / 2. * np.pi / 180.
-
-        if abs(relative_angle) > angle_lim:
+        if abs(relative_angle) > (self.ANGLE_LIM_SCOPED if observer.held_object.item.scoped else self.ANGLE_LIM_STD):
             return False
 
-        # Trace path
-        map_ = self.session.map
+        map_ = self.map
         zone_map = map_.zone_null if ignore_zone else map_.zone
-        player_id_map = map_.player_id_null if ignore_players else map_.player_id
 
-        barred_pos = sdglib.trace_sight(observer.id, observer_pos, entity_pos, map_.height, player_id_map, zone_map)
+        pos_x, pos_y = trace_sight(observer.id, observer_pos, entity_pos, map_.wall, zone_map, map_.player_id_null)
 
-        if any(barred_pos):
-            pos_x, pos_y = barred_pos
-            return map_.player_id[int(pos_y), int(pos_x)] == entity.id
+        if pos_x or pos_y:
+            return self.map.player_id[round(pos_y), round(pos_x)] == entity.id
 
         return True
 
     def add_chat_entry(self, message: Message):
         """Add message to chat history and increment the scroll wheel (unless viewing older messages)."""
+
         if len(self.chat) >= 5 and self.wheel_y >= (len(self.chat) - 5):
             self.wheel_y += 1
 
@@ -765,18 +806,20 @@ class Simulation:
 
     def add_effect(self, effect: Effect):
         """Give the effect an identifer and add it to tracked effects."""
+
         effect_id = (max(self.effects.keys()) + 1) if self.effects else 0
         self.effects[effect_id] = effect
 
         if effect.type == Effect.TYPE_COLOUR:
-            self.fx_map[effect.world_indices] += 1
+            self.fx_ctr_map[effect.world_indices] += 1
 
-    def create_log(self, eval_type: int) -> Union[List[Union[int, float]], None]:
+    def create_log(self, eval_type: int) -> list[int | float] | None:
         """
         Evaluate player action wrt. given evaluation type, cursor position,
         and view. The evaluation can result in the generation of a (local) log,
         e.g. when attempting to purchase an item or send a message.
         """
+
         player: Player = self.session.players.get(self.own_player_id, None)
 
         # Spectators can't chat or buy
@@ -786,14 +829,17 @@ class Simulation:
         if eval_type == GameID.EVAL_BUY:
             if player.team == GameID.GROUP_TEAM_T:
                 hover_id = self.get_cursor_obs_from_code_view(self.code_view_store_t)
+
             else:
                 hover_id = self.get_cursor_obs_from_code_view(self.code_view_store_ct)
 
             if hover_id:
                 if player.money >= self.inventory.get_item_by_id(hover_id).price or player.dev_mode:
                     self.audio_system.queue_sound(self.sounds['buy'], player, player)
+
                 else:
                     self.audio_system.queue_sound(self.sounds['no_buy'], player, player)
+
                 return [self.own_player_id, GameID.LOG_BUY, hover_id, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.]
 
         # Add term id to message buffer, obtained from hover id
@@ -851,6 +897,7 @@ class Simulation:
 
     def enter_world(self):
         """Set observed player etc. upon entering the game world."""
+
         if not self.session.phase:
             return
 
@@ -868,6 +915,7 @@ class Simulation:
 
     def exit_world(self):
         """Set observed player etc. upon exiting the game world."""
+
         self.observed_player_id = self.own_player_id
         self.view = GameID.VIEW_LOBBY
 
@@ -894,8 +942,8 @@ class Simulation:
             return
 
         # Limit observable pool
-        pool_t = list(self.session.players_t.keys())
-        pool_ct = list(self.session.players_ct.keys())
+        pool_t = tuple(self.session.players_t.keys())
+        pool_ct = tuple(self.session.players_ct.keys())
 
         if own_player.team == GameID.GROUP_TEAM_T:
             player_pool = pool_t
@@ -919,3 +967,17 @@ class Simulation:
                 next_idx = 0
 
         self.observed_player_id = player_pool[next_idx]
+
+
+@jit('float64(float64, float64)', nopython=True, nogil=True, cache=True)
+def get_relative_sprite_index(observer_angle: float, player_angle: float) -> float:
+    """Get index from 0 to (incl.) 15 corresponding to a sprite with the angle as seen by the observer."""
+
+    rel_angle = fix_angle_range(player_angle - observer_angle)
+
+    if rel_angle < 0.:
+        rel_angle += F_2PI
+
+    rel_angle *= 16. / F_2PI
+
+    return round(rel_angle) if rel_angle < 15.5 else 0

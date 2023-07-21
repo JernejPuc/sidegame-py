@@ -52,10 +52,10 @@ class Action:
         self.processed = False
 
 
-class EventBase:
+class Event:
     """An extendable container for in-simulation event types and structures."""
 
-    EMPTY_EVENT_LIST: Iterable['EventBase'] = []
+    EMPTY_EVENT_LIST: Iterable['Event'] = []
 
     def __init__(self, type_: int, data: Any):
         self.type = type_
@@ -93,8 +93,8 @@ class Node:
         self.tracker = tracker
         self.interp_window = 0.
 
-        self.incoming_buffer: Deque[bytes] = deque()
-        self.outgoing_buffer: Deque[bytes] = deque()
+        self.incoming_buffer: List[bytes] = []
+        self.outgoing_buffer: List[bytes] = []
 
         self.time_of_last_contact: float = None
 
@@ -249,8 +249,8 @@ class ClientSocket:
         self._placeholder_sockets: List[socket.socket] = []
 
         self.node = Node()
-        self._incoming_buffer: Deque[bytes] = self.node.incoming_buffer
-        self._outgoing_buffer: Deque[bytes] = self.node.outgoing_buffer
+        self._incoming_buffer: List[bytes] = self.node.incoming_buffer
+        self._outgoing_buffer: List[bytes] = self.node.outgoing_buffer
 
     def close(self):
         """Shutdown and close the underlying UDP socket."""
@@ -383,8 +383,8 @@ class ServerSocket:
 
         self.nodes: Dict[Tuple[str, int], Node] = {}
         self._node_counter = 0
-        self._new_nodes: Deque[int] = deque()
-        self._disconnected_nodes: Deque[int] = deque()
+        self._new_nodes: List[int] = []
+        self._disconnected_nodes: List[int] = []
 
     def close(self):
         """

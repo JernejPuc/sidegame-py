@@ -259,21 +259,12 @@ Despite some time of inactivity, the prospect of revisiting SiDeGame remains.
 The following open issues are being addressed in 2023:
 
 
-### `sidegame`
-
 #### Gameplay
 - Add more maps by modifying the original map for different team sizes:
   1v0 (aim practice), 1v1, 2v2, 3v3, 4v4, 5v5 (existing/original).
 - Experiment with partial border or background colouring of the side panel
   based on type, sender or time to make messages stand out and aid panel navigation.
 - Experiment with message wheel views to improve selection accuracy and speed.
-
-#### Optimisation
-- Use numba to optimise physics, logic, and drawing wherever possible and beneficial.
-- Tweak the audio channel system to better handle many overlapping sounds.
-
-
-### `sdgai`
 
 #### Supervised pretraining
 - Remove current imitation learning implementation and model.
@@ -303,7 +294,8 @@ The following open issues are being addressed in 2023:
 Other points to be addressed, with lower priority:
 
 
-### `sidegame`
+#### Optimisation
+- Tweak the audio channel system to better handle many overlapping sounds.
 
 #### Gameplay
 - Add a command to fill all empty player positions with AI agents or dummies.

@@ -1,4 +1,9 @@
-class GameID:
+"""Elements shared between different parts of SDG"""
+
+from enum import IntEnum
+
+
+class GameID(IntEnum):
     """Unique IDs that can be used in messaging etc."""
 
     NULL = 0
@@ -101,3 +106,110 @@ class GameID:
     EVAL_MSG_TERM = 243
     EVAL_MSG_SEND = 244
     EVAL_BUY = 245
+
+
+class EventID(IntEnum):
+    """Types of in-game events."""
+
+    NULL = 0
+
+    CTRL_MATCH_STARTED = 1
+    CTRL_MATCH_ENDED = 2
+    CTRL_MATCH_PHASE_CHANGED = 3
+    CTRL_SESSION_ENDED = 4
+    CTRL_PLAYER_CONNECTED = 5
+    CTRL_PLAYER_DISCONNECTED = 6
+    CTRL_PLAYER_MOVED = 7
+    CTRL_PLAYER_CHANGED = 8
+    CTRL_LATENCY_REQUESTED = 9
+
+    OBJECT_SPAWN = 11
+    OBJECT_EXPIRE = 12
+    OBJECT_ASSIGN = 13
+    OBJECT_TRIGGER = 14
+
+    C4_PLANTED = 21
+    C4_DEFUSED = 22
+    C4_DETONATED = 23
+    FX_C4_TOUCHED = 24
+    FX_C4_INIT = 25
+    FX_C4_KEY_PRESS = 26
+    FX_C4_BEEP = 27
+    FX_C4_BEEP_DEFUSING = 28
+    FX_C4_NVG = 29
+
+    FX_BOUNCE = 31
+    FX_LAND = 32
+    FX_ATTACK = 33
+    FX_CLIP_LOW = 34
+    FX_CLIP_EMPTY = 35
+    FX_EXTINGUISH = 36
+    FX_FOOTSTEP = 37
+    FX_FLASH = 38
+    FX_WALL_HIT = 39
+
+    PLAYER_DAMAGE = 41
+    PLAYER_DEATH = 42
+    PLAYER_MESSAGE = 43
+    PLAYER_RELOAD = 44
+
+
+class MapID(IntEnum):
+
+    # Level IDs
+    LEVEL_1V0 = 0
+    LEVEL_1V1 = 1
+    LEVEL_2V2 = 2
+    LEVEL_3V3 = 3
+    LEVEL_4V4 = 4
+    LEVEL_5V5 = 5
+
+    # Code map channels
+    CHANNEL_SOUND = 0
+    CHANNEL_HEIGHT = 1
+    CHANNEL_MARK = 2
+    CHANNEL_WALL = 3
+    CHANNEL_ZONE = 4
+    CHANNEL_ZONE_NULL = 5
+    CHANNEL_FX = 6
+
+    # Id map channels
+    CHANNEL_ZONE_ID = 0
+    CHANNEL_OBJECT_ID = 1
+    CHANNEL_PLAYER_ID = 2
+    CHANNEL_PLAYER_ID_NULL = 3
+
+    # Sound channel codes
+    SOUND_CONCRETE = 255
+    SOUND_DIRT = 205
+    SOUND_WOOD = 155
+    SOUND_METAL = 105
+    SOUND_TILE = 55
+    SOUND_NULL = 0
+
+    # Height map codes
+    HEIGHT_GROUND = 0
+    HEIGHT_TRANSITION = 63
+    HEIGHT_ELEVATED = 127
+    HEIGHT_IMPASSABLE = 255
+
+    # Landmark channel codes
+    LANDMARK_NULL = 0
+    LANDMARK_SPAWN_T = 31
+    LANDMARK_SPAWN_CT = 63
+    LANDMARK_PLANT_A = 127
+    LANDMARK_PLANT_B = 255
+
+    # Zone map codes
+    ZONE_NULL = 0
+    ZONE_FIRE = 127
+    ZONE_SMOKE = 255
+
+    # Entity map codes (max 32728 objects and 32727 entities)
+    OBJECT_ID_NULL = 0
+    PLAYER_ID_NULL = 32767
+
+    MASK_TERRAIN_WALL = 1
+    VIS_LEVEL_FULL = 4
+    VIS_LEVEL_SHADOW = 2
+    VIS_LEVEL_SMOKE = 1

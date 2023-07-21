@@ -11,7 +11,7 @@ import logging
 from socket import timeout
 from collections import deque
 from abc import ABC, abstractmethod
-from typing import Any, Deque, Dict, Iterable, Tuple, Union
+from typing import Any, Deque, Dict, Iterable, List, Tuple, Union
 from time import perf_counter_ns
 
 from sidegame.networking.core import Entry, Action, Entity, Recorder, ClientSocket
@@ -184,7 +184,7 @@ class ClientBase(ABC):
             # Seek the pair of consecutive states between which the entity is to be interpolated,
             # removing those that have already been succeeded
             while len(entity.states) >= 2 and entity.states[1].timestamp < render_timestamp:
-                del entity.states[0]
+                entity.states.popleft()
 
             if len(entity.states) >= 2:
                 state_0, state_1 = entity.states[0], entity.states[1]
@@ -302,8 +302,8 @@ class LiveClient(ClientBase):
         self._clock_ref: int = perf_counter_ns()
 
         self._socket = ClientSocket(server_address, client_message_size, server_message_size)
-        self._incoming_buffer: Deque[bytes] = self._socket.node.incoming_buffer
-        self._outgoing_buffer: Deque[bytes] = self._socket.node.outgoing_buffer
+        self._incoming_buffer: List[bytes] = self._socket.node.incoming_buffer
+        self._outgoing_buffer: List[bytes] = self._socket.node.outgoing_buffer
 
         self._fps_limiter = TickLimiter(
             tick_rate,
@@ -648,7 +648,7 @@ class ReplayClient(ClientBase):
                     self._queued_state_updates.append(data)
 
                 clk = clk_
-                del self.recording[0]
+                self.recording.popleft()
 
             else:
                 break

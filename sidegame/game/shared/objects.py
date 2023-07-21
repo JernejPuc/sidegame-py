@@ -1,16 +1,23 @@
 """Functional extensions of items in SDG"""
 
 from collections import deque
-from typing import Dict, Iterable, Optional, Tuple, Union
+from typing import Iterable
 
 import numpy as np
+from numpy import ndarray
+from numba import jit
 
 from sidegame.assets import Map
-from sidegame.game import GameID
-from sidegame.ext import sdglib
-from sidegame.physics import ThrowableEntity, PlayerEntity, fix_angle_range, update_collider_map, F_PI, F_PI2, F_2PI
-from sidegame.networking.core import Entity
-from sidegame.game.shared import Event, Item
+from sidegame.game import EventID, MapID
+from sidegame.utils_jit import index2_by_tuple, get_disk_mask, vec2_norm2, fix_angle_range, F_PI, F_PI2
+from sidegame.physics import ThrowableEntity, PlayerEntity, update_collider_map, trace_shot, trace_sight
+from sidegame.networking.core import Entity, Event
+from sidegame.game.shared import Item
+
+
+MAX_SHOT_RANGE = 640.
+DIST_MOD_REF_RANGE = 56.86
+KNIFE_REACH = 4. * np.sqrt(2.)
 
 
 class Object(Entity, ThrowableEntity):
@@ -32,12 +39,12 @@ class Object(Entity, ThrowableEntity):
         self,
         item: Item,
         owner: PlayerEntity,
-        entity_id: Optional[int] = 0,
-        lifetime: Optional[float] = np.Inf,
-        durability: Optional[float] = None,
-        magazine: Optional[int] = None,
-        reserve: Optional[int] = None,
-        carrying: Optional[int] = None
+        entity_id: int = 0,
+        lifetime: float = np.inf,
+        durability: float = None,
+        magazine: int = None,
+        reserve: int = None,
+        carrying: int = None
     ):
         Entity.__init__(self, entity_id)
         ThrowableEntity.__init__(self, object_id=entity_id)
@@ -70,154 +77,125 @@ class Object(Entity, ThrowableEntity):
         self.magazine = self.item.magazine_cap
         self.reserve = self.item.reserve_cap
 
-    def update(self, dt: float, _players: Iterable[PlayerEntity], _map: Map) -> Iterable[Event]:
+    def update(self, dt: float, map_: Map, _players: list[PlayerEntity], events: list[Event]):
         """
         Evaluate object lifetime and return any resulting events.
 
         Can be overridden to produce additional or different events.
-        To this end, the object can interact with given `_players` and `_map`.
+        To this end, the object can interact with given `players` and `map`.
         """
 
         self.lifetime -= dt
 
         if self.lifetime > 0.:
-            return self.update_move(dt, _map)
+            return self.update_move(dt, map_, events)
 
-        return [Event(Event.OBJECT_EXPIRE, self.id)]
+        events.append(Event(EventID.OBJECT_EXPIRE, self.id))
 
-    def update_move(self, dt: float, map_: Map) -> Iterable[Event]:
+    def update_move(self, dt: float, map_: Map, events: list[Event]):
         """Move towards target position, returning any collision events."""
 
         old_pos = self.pos
 
-        status = self.move(dt, map_.wall, map_.object_id)
+        event_id = self.move(dt, map_.wall, map_.object_id)
 
-        update_collider_map(self.covered_indices, map_.object_id, old_pos, self.pos, self.id, Map.OBJECT_ID_NULL)
+        update_collider_map(self.covered_indices, map_.object_id, old_pos, self.pos, self.id, MapID.OBJECT_ID_NULL)
 
-        if status == ThrowableEntity.COLLISION_BOUNCE:
-            return [Event(Event.FX_BOUNCE, self.id)]
+        if event_id == EventID.FX_BOUNCE:
+            events.append(Event(event_id, self.id))
 
-        elif status == ThrowableEntity.COLLISION_LANDING:
-            return [Event(Event.FX_LAND, self.id)]
-
-        else:
-            return Event.EMPTY_EVENT_LIST
+        elif event_id == EventID.FX_LAND:
+            events.append(Event(event_id, self.id))
 
 
 class Weapon(Object):
     """A primary weapon or pistol instance."""
 
-    MAX_SHOT_RANGE = 640.
-    DIST_MOD_REF_RANGE = 56.86
-
-    def __init__(self, item: Item, owner: PlayerEntity, *args, rng: np.random.Generator = None, **kwargs):
-        assert item.slot in (Item.SLOT_PRIMARY, Item.SLOT_PISTOL)
-
-        super().__init__(item, owner, *args, **kwargs)
+    def __init__(self, item: Item, owner: PlayerEntity, rng: np.random.Generator = None):
+        super().__init__(item, owner)
 
         self.rng = np.random.default_rng() if rng is None else rng
 
     def fire(
         self,
-        pos: np.ndarray,
-        vel: np.ndarray,
+        pos: ndarray,
+        vel: ndarray,
         angle: float,
         firing_inaccuracy: float,
-        height_map: np.ndarray,
-        player_map: np.ndarray
-    ) -> Iterable[Event]:
+        wall_map: ndarray,
+        player_id_map: ndarray
+    ) -> list[Event]:
         """Try to attack, returning damage, hit, and sound events."""
 
         # Convey empty clip sound
         if self.magazine == 0:
-            return [Event(Event.FX_CLIP_EMPTY, self.owner.id)]
+            return (Event(EventID.FX_CLIP_EMPTY, self.owner.id),)
+
+        item = self.item
+        owner_id = self.owner.id
 
         # Convey attack sound
-        events = deque()
-        events.append(Event(Event.FX_ATTACK, (self.owner.id, self.item.id)))
+        events = [Event(EventID.FX_ATTACK, (owner_id, item.id))]
 
-        # Convey low on ammo sound
+        # Convey low-on-ammo sound
         if self.magazine <= self.item.magazine_cap//3:
-            events.append(Event(Event.FX_CLIP_LOW, self.owner.id))
+            events.append(Event(EventID.FX_CLIP_LOW, owner_id))
 
         # Subtract ammo charge
         self.magazine -= 1
 
-        # Interpolate base inacuraccies
-        # NOTE: Exp. 1. for walking, 0.25 for running, 0.5 as a compromise
-        alpha = min(1., (max(0., np.linalg.norm(vel)/self.item.velocity_cap - 0.34) / (0.95 - 0.34))**0.5)
-        base_inaccuracy = alpha * self.item.moving_inaccuracy + (1. - alpha) * self.item.standing_inaccuracy
-        inaccuracy = base_inaccuracy + firing_inaccuracy
+        # Interpolate base inacuraccies to randomise firing angle
+        halved_inaccuracy = get_halved_inaccuracy(
+            vel, item.velocity_cap, item.moving_inaccuracy, item.standing_inaccuracy, firing_inaccuracy)
 
         # Get hits
-        for _ in range(self.item.pellets):
-            # Randomise angle wrt. inaccuracy
-            firing_angle = angle + self.rng.triangular(-inaccuracy/2., 0., inaccuracy/2.)
+        for _ in range(item.pellets):
+            firing_angle = angle + self.rng.triangular(-halved_inaccuracy, 0., halved_inaccuracy)
 
-            endpos = pos + np.array([np.cos(firing_angle), np.sin(firing_angle)]) * self.MAX_SHOT_RANGE
-            endpos_check = sdglib.trace_shot(self.owner.id, pos, endpos, height_map, player_map)
+            event_id, hit_id, hit_pos, dmg = fire_weapon(
+                owner_id, pos, firing_angle, item.base_damage, item.distance_modifier, wall_map, player_id_map)
 
-            # NOTE: Returns zeros if reaching target (max range)
-            if any(endpos_check):
-                hit_id = player_map[round(endpos_check[1]), round(endpos_check[0])]
+            if event_id == EventID.PLAYER_DAMAGE:
+                events.append(Event(event_id, (owner_id, hit_id, item.id, dmg)))
 
-                # Check if any entity was hit
-                if hit_id != Map.PLAYER_ID_NULL:
-                    dmg = self.get_damage(np.linalg.norm(self.owner.pos - endpos_check))
-                    events.append(Event(Event.PLAYER_DAMAGE, (self.owner.id, hit_id, self.item.id, dmg)))
-
-                else:
-                    events.append(Event(Event.FX_WALL_HIT, (endpos_check, self.owner.id, self.item.id)))
+            elif event_id == EventID.FX_WALL_HIT:
+                events.append(Event(event_id, (hit_pos, owner_id, item.id)))
 
         return events
-
-    def get_damage(self, distance: float) -> float:
-        """Get damage based on distance to the target."""
-
-        return self.item.base_damage * self.item.distance_modifier ** (distance / self.DIST_MOD_REF_RANGE)
 
 
 class Knife(Object):
     """A knife item instance."""
 
-    REACH = 4. * np.sqrt(2.)
-
-    def __init__(self, item: Item, owner: PlayerEntity):
-        assert item.id == GameID.ITEM_KNIFE
-        super().__init__(item, owner)
+    SWIPE_ANGLES = np.array([-F_PI/8., -F_PI/16., 0., F_PI/16., F_PI/8.])
 
     def slash(
         self,
-        pos: np.ndarray,
-        height_map: np.ndarray,
-        player_map: np.ndarray,
-        players: Dict[int, PlayerEntity]
-    ) -> Iterable[Event]:
+        pos: ndarray,
+        wall_map: ndarray,
+        player_id_map: ndarray,
+        players: dict[int, PlayerEntity]
+    ) -> list[Event]:
         """Try to attack, returning damage, hit, and sound events."""
 
-        events = deque()
+        owner_id = self.owner_id
+        item_id = self.item.id
+        events = []
 
         # Convey attack sound
-        events.append(Event(Event.FX_ATTACK, (self.owner.id, self.item.id)))
-
-        hit_id = Map.PLAYER_ID_NULL
+        events.append(Event(EventID.FX_ATTACK, (owner_id, item_id)))
 
         # Get hits
-        for swipe_angle in np.array([-np.pi/8., -np.pi/16., 0., np.pi/16., np.pi/8.]) + self.owner.angle:
-            endpos = pos + np.array([np.cos(swipe_angle), np.sin(swipe_angle)]) * self.REACH
-            endpos_check = sdglib.trace_shot(self.owner.id, pos, endpos, height_map, player_map)
+        for swipe_angle in self.SWIPE_ANGLES + self.owner.angle:
+            event_id, hit_id, hit_pos = slash_knife(owner_id, pos, swipe_angle, wall_map, player_id_map)
 
-            if any(endpos_check):
-                hit_id = player_map[round(endpos_check[1]), round(endpos_check[0])]
+            if event_id == EventID.PLAYER_DAMAGE:
+                dmg = self.get_damage(self.owner.angle, players[hit_id].angle)
+                events.append(Event(event_id, (owner_id, hit_id, item_id, dmg)))
+                break
 
-                if hit_id == Map.PLAYER_ID_NULL:
-                    events.append(Event(Event.FX_WALL_HIT, (endpos_check, self.owner.id, self.item.id)))
-
-        # Check if any entity was hit
-        if hit_id != Map.PLAYER_ID_NULL:
-            hit_angle = players[hit_id].angle
-            dmg = self.get_damage(self.owner.angle, hit_angle)
-            events.append(Event(Event.PLAYER_DAMAGE, (self.owner.id, hit_id, self.item.id, dmg)))
+            elif event_id == EventID.FX_WALL_HIT:
+                events.append(Event(event_id, (hit_pos, owner_id, item_id)))
 
         return events
 
@@ -225,12 +203,7 @@ class Knife(Object):
         """Get damage based on angle of the hit (damage to the back is tripled)."""
 
         dmg = self.item.base_damage
-        d_angle = angle - hit_angle
-
-        if d_angle > F_PI:
-            d_angle = -F_2PI + d_angle
-        elif d_angle < -F_PI:
-            d_angle = F_2PI + d_angle
+        d_angle = fix_angle_range(angle - hit_angle)
 
         if abs(d_angle) < F_PI2:
             dmg *= 3.
@@ -247,10 +220,9 @@ class Flash(Object):
     """
 
     def __init__(self, item: Item, owner: PlayerEntity):
-        assert item.id == GameID.ITEM_FLASH
         super().__init__(item, owner, lifetime=item.fuse_time)
 
-    def update(self, dt: float, _players: Iterable[PlayerEntity], _map: Map) -> Iterable[Event]:
+    def update(self, dt: float, map_: Map, players: list[PlayerEntity], events: list[Event]):
         """
         Evaluate object lifetime and return any resulting events.
 
@@ -261,43 +233,24 @@ class Flash(Object):
         self.lifetime -= dt
 
         if self.lifetime > 0.:
-            return self.update_move(dt, _map)
+            return self.update_move(dt, map_, events)
+
+        self_pos = self.pos
+        code_map = map_.code_map
+        player_id_map = map_.player_id_null
 
         # Get debuff strength per player
-        events = deque()
+        events.append(Event(EventID.OBJECT_TRIGGER, self.id))
 
-        events.append(Event(Event.OBJECT_TRIGGER, self.id))
+        for player in players:
+            debuff = get_flash_strength(self_pos, player.pos, player.angle, code_map, player_id_map)
 
-        for player in _players:
-            if player.health:
-                debuff = self.get_debuff_strength(player.pos, player.angle, _map)
-
-                if debuff != 0.:
-                    events.append(
-                        Event(Event.FX_FLASH, (self.owner.id, player.id, debuff, self.get_debuff_duration(debuff))))
+            if debuff != 0.:
+                events.append(
+                    Event(EventID.FX_FLASH, (self.owner.id, player.id, debuff, self.get_debuff_duration(debuff))))
 
         # Expire upon being triggered
-        events.append(Event(Event.OBJECT_EXPIRE, self.id))
-
-        return events
-
-    def get_debuff_strength(self, pos: np.ndarray, angle: float, map_: Map) -> float:
-        """
-        Get the strength of a flash event wrt. flashed player position, angle,
-        and line of sight.
-        """
-
-        if any(sdglib.trace_sight(self.owner.id, pos, self.pos, map_.height, map_.player_id_null, map_.zone)):
-            return 0.
-
-        rel_position = self.pos - pos
-        rel_x, rel_y = rel_position
-        rel_angle = np.arctan2(rel_y, rel_x)
-
-        viewing_angle = fix_angle_range(angle - rel_angle)
-        distance = np.linalg.norm(rel_position)
-
-        return (1. - np.abs(viewing_angle) / np.pi) * max(0., 1. - distance / 216.)
+        events.append(Event(EventID.OBJECT_EXPIRE, self.id))
 
     @staticmethod
     def get_debuff_duration(debuff_strength: float) -> float:
@@ -322,10 +275,9 @@ class Explosive(Object):
     """
 
     def __init__(self, item: Item, owner: PlayerEntity):
-        assert item.id == GameID.ITEM_EXPLOSIVE
         super().__init__(item, owner, lifetime=item.fuse_time)
 
-    def update(self, dt: float, _players: Iterable[PlayerEntity], _map: Map) -> Iterable[Event]:
+    def update(self, dt: float, map_: Map, players: list[PlayerEntity], events: list[Event]):
         """
         Evaluate object lifetime and return any resulting events.
 
@@ -335,43 +287,25 @@ class Explosive(Object):
         self.lifetime -= dt
 
         if self.lifetime > 0.:
-            return self.update_move(dt, _map)
+            return self.update_move(dt, map_, events)
+
+        self_pos = self.pos
+        base_damage = self.item.base_damage
+        blast_radius = self.item.radius
+        wall_map = map_.wall
+        player_id_map = map_.player_id_null
 
         # Get damage per player
-        events = deque()
+        events.append(Event(EventID.OBJECT_TRIGGER, self.id))
 
-        events.append(Event(Event.OBJECT_TRIGGER, self.id))
+        for player in players:
+            damage = get_he_damage(self_pos, player.pos, base_damage, blast_radius, wall_map, player_id_map)
 
-        for player in _players:
-            if player.health:
-                damage = self.get_damage(player.pos, _map)
-
-                if damage != 0.:
-                    events.append(Event(Event.PLAYER_DAMAGE, (self.owner.id, player.id, self.item.id, damage)))
+            if damage != 0.:
+                events.append(Event(EventID.PLAYER_DAMAGE, (self.owner.id, player.id, self.item.id, damage)))
 
         # Expire upon being triggered
-        events.append(Event(Event.OBJECT_EXPIRE, self.id))
-
-        return events
-
-    def get_damage(self, pos: np.ndarray, _map: Map) -> float:
-        """
-        Get the damage wrt. player position (distance) and line of sight.
-
-        For simplicity, line of sight is only traced to a player's
-        central position, so it can be shielded by a wall even if
-        not fully behind it.
-        """
-
-        if any(sdglib.trace_shot(self.owner.id, pos, self.pos, _map.height, _map.player_id_null)):
-            return 0.
-
-        distance = np.linalg.norm(self.pos - pos)
-
-        if distance > self.item.radius:
-            return 0.
-
-        return self.item.base_damage / (1. + (distance/15.)**3)
+        events.append(Event(EventID.OBJECT_EXPIRE, self.id))
 
 
 class Incendiary(Object):
@@ -388,100 +322,55 @@ class Incendiary(Object):
     EVAL_INTERVAL = 0.2
 
     def __init__(self, item: Item, owner: PlayerEntity):
-        assert item.id in (GameID.ITEM_INCENDIARY_T, GameID.ITEM_INCENDIARY_CT)
-        super().__init__(item, owner, lifetime=(item.fuse_time + item.duration))
+        super().__init__(item, owner, lifetime=item.fuse_time + item.duration)
 
         self.triggered = False
-        self.cover_indices: Tuple[np.ndarray] = None
+        self.cover_indices: tuple[ndarray] = None
         self.next_eval_time = self.item.duration
         self.accumulated_dt = 0.
 
-    def set_zone_cover(self, wall_map: np.ndarray, zone_map: np.ndarray, zone_id_map: np.ndarray) -> Iterable[Event]:
+    def set_zone_cover(self, map_: Map) -> Iterable[Event]:
         """
         Claim area in zone and zone ID maps at cover indices,
         returning trigger and/or other events if cover indices were
         partially or fully reduced (flame extinguished).
         """
 
-        pos_y, pos_x, radius = round(self.pos[1]), round(self.pos[0]), round(self.item.radius)
+        event_id, self.cover_indices = set_flame_cover(
+            self.id, self.pos, self.item.radius, map_.code_map, map_.zone_id)
 
-        # Get square base (slice lengths should be odd)
-        slice_y = slice(pos_y - radius, pos_y + radius + 1)
-        slice_x = slice(pos_x - radius, pos_x + radius + 1)
+        if event_id == EventID.OBJECT_EXPIRE:
+            return (Event(EventID.FX_EXTINGUISH, self.id), Event(EventID.OBJECT_EXPIRE, self.id))
 
-        wall_chunk = wall_map[slice_y, slice_x]
+        elif event_id == EventID.FX_EXTINGUISH:
+            return (Event(EventID.FX_EXTINGUISH, self.id), Event(EventID.OBJECT_TRIGGER, self.id))
 
-        # Get disk mask
-        indices = np.indices(wall_chunk.shape) - np.array([radius, radius])[..., None, None]
-        cover = np.linalg.norm(indices, axis=0) < self.item.radius
+        return (Event(EventID.OBJECT_TRIGGER, self.id), )
 
-        # Get flammable ground mask
-        cover &= ~wall_chunk.astype(bool)
-
-        # Get smoke mask
-        zone_chunk = zone_map[slice_y, slice_x]
-        smoke = zone_chunk == Map.ZONE_SMOKE
-
-        # Get overlap
-        overlap = cover & smoke
-
-        # Full overlap
-        if np.all(overlap == cover):
-            return [Event(Event.FX_EXTINGUISH, self.id), Event(Event.OBJECT_EXPIRE, self.id)]
-
-        # Partial overlap
-        elif np.any(overlap):
-            cover &= ~smoke
-            events = [Event(Event.FX_EXTINGUISH, self.id), Event(Event.OBJECT_TRIGGER, self.id)]
-
-        # No overlap
-        else:
-            events = [Event(Event.OBJECT_TRIGGER, self.id)]
-
-        # Get global indices
-        indices_y, indices_x = np.nonzero(cover)
-        indices_y -= int(radius)
-        indices_x -= int(radius)
-        self.cover_indices = indices_y + pos_y, indices_x + pos_x
-
-        # Set zone cover
-        zone_map[self.cover_indices] = Map.ZONE_FIRE
-        zone_id_map[self.cover_indices] = self.id
-
-        return events
-
-    def check_zone_cover(self, zone_map: np.ndarray, zone_id_map: np.ndarray) -> Iterable[Event]:
+    def check_zone_cover(self, map_: Map) -> Iterable[Event]:
         """
         Check for and return events if previous cover indices were
         partially or fully reduced (flame extinguished).
         """
 
-        covered_zone = (zone_id_map[self.cover_indices] == self.id) | (zone_map[self.cover_indices] != Map.ZONE_SMOKE)
+        event_id, self.cover_indices = check_flame_cover(self.id, self.cover_indices, map_.zone_id)
 
-        # Extinguished
-        if not np.any(covered_zone):
-            return [Event(Event.FX_EXTINGUISH, self.id), Event(Event.OBJECT_EXPIRE, self.id)]
+        if event_id == EventID.OBJECT_EXPIRE:
+            return (Event(EventID.FX_EXTINGUISH, self.id), Event(EventID.OBJECT_EXPIRE, self.id))
 
-        # Partially extinguished
-        elif not np.all(covered_zone):
-            self.cover_indices = self.cover_indices[0][covered_zone], self.cover_indices[1][covered_zone]
-            return [Event(Event.FX_EXTINGUISH, self.id)]
+        elif event_id == EventID.FX_EXTINGUISH:
+            return (Event(EventID.FX_EXTINGUISH, self.id), )
 
-        # Nothing new
         return Event.EMPTY_EVENT_LIST
 
-    def clear_zone_cover(self, zone_map: np.ndarray, zone_id_map: np.ndarray) -> Iterable[Event]:
+    def clear_zone_cover(self, map_: Map) -> Iterable[Event]:
         """Clear zone and zone ID maps at still covered indices."""
 
-        covered_zone = zone_id_map[self.cover_indices] == self.id
-        cover_indices = self.cover_indices[0][covered_zone], self.cover_indices[1][covered_zone]
+        clear_zone_cover(self.id, self.cover_indices, map_.zone, map_.zone_id)
 
-        zone_map[cover_indices] = Map.ZONE_NULL
-        zone_id_map[cover_indices] = Map.OBJECT_ID_NULL
+        return (Event(EventID.OBJECT_EXPIRE, self.id), )
 
-        return [Event(Event.OBJECT_EXPIRE, self.id)]
-
-    def update(self, dt: float, _players: Iterable[PlayerEntity], _map: Map) -> Iterable[Event]:
+    def update(self, dt: float, map_: Map, players: list[PlayerEntity], events: list[Event]):
         """
         Evaluate object lifetime and return any resulting events.
 
@@ -491,106 +380,70 @@ class Incendiary(Object):
         self.lifetime -= dt
 
         if self.lifetime > self.item.duration:
-            return self.update_move(dt, _map)
+            self.update_move(dt, map_, events)
 
         # Engulf area
         elif not self.triggered:
             self.triggered = True
-            return self.set_zone_cover(_map.wall, _map.zone, _map.zone_id)
+            events.extend(self.set_zone_cover(map_))
 
         # Check for past extinguishments
         elif self.lifetime > 0.:
-            events = self.check_zone_cover(_map.zone, _map.zone_id)
+            events_ = self.check_zone_cover(map_)
             self.accumulated_dt += dt
 
             # 2 events means extinguished and expired, 1 only partially extinguished, 0 no change
-            if len(events) < 2 and self.lifetime <= self.next_eval_time:
+            if len(events_) < 2 and self.lifetime <= self.next_eval_time:
                 self.next_eval_time -= self.EVAL_INTERVAL
-                events = deque(events)
+                events.extend(events_)
+
+                self_id = self.id
+                base_dmg = self.item.base_damage
+                duration = self.item.duration
 
                 # Get damage per player
-                for player in _players:
-                    if player.health:
-                        damage = self.get_damage(player, self.accumulated_dt, _map.zone_id)
+                for player in players:
+                    damage = get_flame_damage(
+                        self_id, player.pos, player.covered_indices,
+                        base_dmg, duration, self.accumulated_dt, map_.zone_id)
 
-                        if damage != 0.:
-                            events.append(Event(Event.PLAYER_DAMAGE, (self.owner.id, player.id, self.item.id, damage)))
+                    if damage != 0.:
+                        events.append(
+                            Event(EventID.PLAYER_DAMAGE, (self.owner.id, player.id, self.item.id, damage)))
 
                 self.accumulated_dt = 0.
 
-            return events
-
         else:
-            return self.clear_zone_cover(_map.zone, _map.zone_id)
-
-    def get_damage(self, player: PlayerEntity, dt: float, zone_id_map: np.ndarray) -> float:
-        """
-        Get the damage wrt. estimated time that the player has stood on
-        the zone cover claimed by this object for.
-        """
-
-        if np.any(zone_id_map[player.get_covered_indices()] == self.id):
-            return self.item.base_damage * dt / self.item.duration
-
-        return 0.
+            events.extend(self.clear_zone_cover(map_))
 
 
 class Smoke(Object):
     """A smoke grenade item instance."""
 
     def __init__(self, item: Item, owner: PlayerEntity):
-        assert item.id == GameID.ITEM_SMOKE
-        super().__init__(item, owner, lifetime=(item.fuse_time + item.duration))
+        super().__init__(item, owner, lifetime=item.fuse_time + item.duration)
 
         self.triggered = False
-        self.cover_indices: np.ndarray = None
+        self.cover_indices: ndarray = None
 
-    def set_zone_cover(self, wall_map: np.ndarray, zone_map: np.ndarray, zone_id_map: np.ndarray) -> Iterable[Event]:
+    def set_zone_cover(self, map_: Map) -> Iterable[Event]:
         """
         Claim area in zone and zone id maps at cover indices,
         returning trigger and/or other events if cover indices of other
         objects' zones were partially or fully reduced (flame extinguished).
         """
 
-        pos_y, pos_x, radius = round(self.pos[1]), round(self.pos[0]), round(self.item.radius)
+        self.cover_indices = set_smoke_cover(self.id, self.pos, self.item.radius, map_.code_map, map_.zone_id)
 
-        # Get square base (slice lengths should be odd)
-        slice_y = slice(pos_y - radius, pos_y + radius + 1)
-        slice_x = slice(pos_x - radius, pos_x + radius + 1)
+        return (Event(EventID.OBJECT_TRIGGER, self.id), )
 
-        wall_chunk = wall_map[slice_y, slice_x]
+    def clear_zone_cover(self, map_: Map) -> Iterable[Event]:
 
-        # Get disk mask
-        indices = np.indices(wall_chunk.shape) - np.array([radius, radius])[..., None, None]
-        cover = np.linalg.norm(indices, axis=0) < self.item.radius
+        clear_zone_cover(self.id, self.cover_indices, map_.zone, map_.zone_id)
 
-        # Get ground mask
-        cover &= ~wall_chunk.astype(bool)
+        return (Event(EventID.OBJECT_EXPIRE, self.id), )
 
-        # Get global indices
-        indices_y, indices_x = np.nonzero(cover)
-        indices_y -= int(radius)
-        indices_x -= int(radius)
-        self.cover_indices = indices_y + pos_y, indices_x + pos_x
-
-        # Set zone cover
-        zone_map[self.cover_indices] = Map.ZONE_SMOKE
-        zone_id_map[self.cover_indices] = self.id
-
-        return [Event(Event.OBJECT_TRIGGER, self.id)]
-
-    def clear_zone_cover(self, zone_map: np.ndarray, zone_id_map: np.ndarray) -> Iterable[Event]:
-        """Clear zone and zone ID maps at still covered indices."""
-
-        covered_zone = zone_id_map[self.cover_indices] == self.id
-        cover_indices = self.cover_indices[0][covered_zone], self.cover_indices[1][covered_zone]
-
-        zone_map[cover_indices] = Map.ZONE_NULL
-        zone_id_map[cover_indices] = Map.OBJECT_ID_NULL
-
-        return [Event(Event.OBJECT_EXPIRE, self.id)]
-
-    def update(self, dt: float, _players: Iterable[PlayerEntity], _map: Map) -> Iterable[Event]:
+    def update(self, dt: float, map_: Map, players: list[PlayerEntity], events: list[Event]):
         """
         Evaluate object lifetime and return any resulting events.
 
@@ -603,20 +456,16 @@ class Smoke(Object):
         if self.lifetime > self.item.duration:
             if self.pos_target is None:
                 self.lifetime = min(self.lifetime, self.item.duration + 0.5)
-                return Event.EMPTY_EVENT_LIST
 
             else:
-                return self.update_move(dt, _map)
+                self.update_move(dt, map_, events)
 
         elif not self.triggered:
             self.triggered = True
-            return self.set_zone_cover(_map.wall, _map.zone, _map.zone_id)
+            events.extend(self.set_zone_cover(map_))
 
-        elif self.lifetime > 0.:
-            return Event.EMPTY_EVENT_LIST
-
-        else:
-            return self.clear_zone_cover(_map.zone, _map.zone_id)
+        elif self.lifetime <= 0.:
+            events.extend(self.clear_zone_cover(map_))
 
 
 class C4(Object):
@@ -640,10 +489,9 @@ class C4(Object):
     PRESS_PROGRESS_THRESHOLDS = [0.195, 0.285, 0.415, 0.495, 0.6, 0.75, 0.84]
     DEFUSE_DISTANCE_THRESHOLD = 8.
 
-    PLANTING_LANDMARKS: Tuple[int] = (Map.LANDMARK_PLANT_A, Map.LANDMARK_PLANT_B)
+    PLANTING_LANDMARKS: tuple[int] = (MapID.LANDMARK_PLANT_A, MapID.LANDMARK_PLANT_B)
 
     def __init__(self, item: Item, owner: PlayerEntity):
-        assert item.id == GameID.ITEM_C4
         super().__init__(item, owner)
 
         self.beep_timings = deque(self.BEEP_TIMINGS)
@@ -657,7 +505,7 @@ class C4(Object):
         self.defuse_start_time: float = None
         self.defuse_progress: float = None
 
-    def try_plant(self, pos: np.ndarray, landmark_map: np.ndarray, focus: bool, timestamp: float) -> Union[Event, None]:
+    def try_plant(self, pos: ndarray, landmark_map: ndarray, timestamp: float) -> Event | None:
         """
         Start planting if on site or advance it, until planting is completed.
         Key press events can also be returned to indicate progress.
@@ -665,20 +513,22 @@ class C4(Object):
 
         pos_y, pos_x = round(pos[1]), round(pos[0])
 
-        if landmark_map[pos_y, pos_x] in self.PLANTING_LANDMARKS and focus:
+        # Check if the player is positioned at any planting site
+        if landmark_map[pos_y, pos_x] in self.PLANTING_LANDMARKS:
+
+            # Update plant
             if self.plant_start_time is not None:
-                # Update_plant
                 dt = timestamp - self.plant_start_time
                 self.plant_progress = dt / self.TIME_TO_PLANT
 
+            # Start plant
             else:
-                # Start plant
                 self.plant_start_time = timestamp
                 self.plant_progress = 0.
-                return Event(Event.FX_C4_INIT, self.owner.id)
+                return Event(EventID.FX_C4_INIT, self.owner.id)
 
+        # Break plant
         else:
-            # End plant
             self.plant_start_time = None
             self.plant_progress = 0.
             self.press_thresholds = deque(self.PRESS_PROGRESS_THRESHOLDS)
@@ -688,105 +538,459 @@ class C4(Object):
         if self.plant_progress >= 1.:
             self.defuse_progress = 0.
             self.lifetime = self.TIME_TO_EXPLODE
-            return Event(Event.C4_PLANTED, self)
+            return Event(EventID.C4_PLANTED, self)
 
         # Play key press
         elif self.press_thresholds and self.plant_progress >= self.press_thresholds[0]:
-            del self.press_thresholds[0]
-            return Event(Event.FX_C4_KEY_PRESS, self.owner.id)
+            self.press_thresholds.popleft()
+            return Event(EventID.FX_C4_KEY_PRESS, self.owner.id)
 
         return None
 
-    def update(self, dt: float, _players: Iterable[PlayerEntity], _map: Map) -> Iterable[Event]:
-        """
-        Check if acted upon by a player, start, update, or end defuse,
-        and generate associated events, including detonation and beep sounds.
-        """
+    def try_defuse(self, pos: ndarray, player_id: int, kit_available: bool, timestamp: float) -> Event | None:
+        """Check if acted upon by a player, start, update, or end defusing."""
+
+        # Check if the player is near enough to the object
+        if vec2_norm2(pos - self.pos) <= self.DEFUSE_DISTANCE_THRESHOLD:
+
+            # Update defuse
+            if self.defused_by == player_id:
+                dt = timestamp - self.defuse_start_time
+                self.defuse_progress = dt / (self.TIME_TO_DEFUSE / 2. if kit_available else self.TIME_TO_DEFUSE)
+
+            # Start defuse
+            elif self.defused_by is None:
+                self.defuse_start_time = timestamp
+                self.defuse_progress = 0.
+                self.defused_by = player_id
+                return Event(EventID.FX_C4_TOUCHED, self.id)
+
+        # Break defuse
+        else:
+            self.defuse_start_time = None
+            self.defuse_progress = 0.
+            self.defused_by = None
+            return None
+
+        # Confirm defused
+        if self.defuse_progress >= 1.:
+            return Event(EventID.C4_DEFUSED, self)
+
+        return None
+
+    def update(self, dt: float, map_: Map, players: list[PlayerEntity], events: list[Event]):
+        """Generate associated events, including detonation and beep sounds."""
 
         self.lifetime -= dt
 
         # Detonate / expire
         if self.lifetime <= 0.:
-            events = deque()
-            events.append(Event(Event.C4_DETONATED, self.id))
+            events.append(Event(EventID.C4_DETONATED, self.id))
+
+            self_pos = self.pos
+            base_dmg = self.item.base_damage
+            radius = self.item.radius
 
             # Get damager per player
-            for player in _players:
-                if player.health:
-                    damage = self.get_damage(player.pos, _map)
+            for player in players:
+                damage = get_c4_damage(self_pos, player.pos, base_dmg, radius)
 
-                    if damage != 0.:
-                        events.append(Event(Event.PLAYER_DAMAGE, (self.owner.id, player.id, self.item.id, damage)))
+                if damage != 0.:
+                    events.append(Event(EventID.PLAYER_DAMAGE, (self.owner.id, player.id, self.item.id, damage)))
 
-            events.append(Event(Event.OBJECT_EXPIRE, self.id))
-            return events
+            return events.append(Event(EventID.OBJECT_EXPIRE, self.id))
 
         # If spawned as a dropped/pickupable object
-        elif self.lifetime == np.Inf:
-            return self.update_move(dt, _map)
+        elif self.lifetime == np.inf:
+            return self.update_move(dt, map_, events)
 
         # If beyond the point of no return
         if not self.can_be_defused:
-            return Event.EMPTY_EVENT_LIST
+            return
 
         elif self.NVG_TIMING >= self.lifetime:
             self.can_be_defused = False
-            return [Event(Event.FX_C4_NVG, self.id)]
+            return events.append(Event(EventID.FX_C4_NVG, self.id))
 
-        events = deque()
-
-        # Emmit beep (site can be inferred client-side)
+        # Emmit beep (site and defusing can be inferred client-side)
         if self.beep_timings and self.beep_timings[0] >= self.lifetime:
-            del self.beep_timings[0]
+            self.beep_timings.popleft()
 
             if self.defused_by is None:
-                events.append(Event(Event.FX_C4_BEEP, self.id))
+                events.append(Event(EventID.FX_C4_BEEP, self.id))
+
             else:
-                events.append(Event(Event.FX_C4_BEEP_DEFUSING, self.id))
+                events.append(Event(EventID.FX_C4_BEEP_DEFUSING, self.id))
 
-        for player in _players:
-            if player.team == GameID.GROUP_TEAM_CT and player.actions:
-                last_action = player.actions[-1]
-                timestamp = last_action.timestamp
-                pos, focus, kit = last_action.data
 
-                focus = focus and player.health and np.linalg.norm(pos - self.pos) <= self.DEFUSE_DISTANCE_THRESHOLD
+@jit('float64(float64[:], float64, float64, float64, float64)', nopython=True, nogil=True, cache=True)
+def get_halved_inaccuracy(
+    vel: ndarray,
+    vel_cap: float,
+    moving_inaccuracy: float,
+    standing_inaccuracy: float,
+    initial_inaccuracy: float
+) -> float:
+    """Interpolate between standing and moving inaccuracy based on current velocity."""
 
-                if self.defused_by == player.id:
-                    # Update defuse
-                    if focus:
-                        dt = timestamp - self.defuse_start_time
-                        self.defuse_progress = dt / (self.TIME_TO_DEFUSE / 2. if kit else self.TIME_TO_DEFUSE)
+    # NOTE: Exp. 1. for walking, 0.25 for running, 0.5 as a compromise
+    alpha = min(1., (max(0., vec2_norm2(vel)/vel_cap - 0.34) / (0.95 - 0.34))**0.5)
+    base_inaccuracy = alpha * moving_inaccuracy + (1. - alpha) * standing_inaccuracy
 
-                    # Break defuse
-                    else:
-                        self.defused_by = None
-                        self.defuse_start_time = None
-                        self.defuse_progress = 0.
+    return (base_inaccuracy + initial_inaccuracy) / 2.
 
-                # Start defuse
-                elif self.defused_by is None and focus:
-                    self.defused_by = player.id
-                    self.defuse_start_time = timestamp
-                    self.defuse_progress = 0.
-                    events.append(Event(Event.FX_C4_TOUCHED, self.id))
 
-        # Complete defuse
-        if self.defuse_progress >= 1.:
-            events.append(Event(Event.C4_DEFUSED, self))
-            events.append(Event(Event.OBJECT_EXPIRE, self.id))
+@jit(
+    'Tuple((int64, int16, float64[:], float64))'
+    '(int16, float64[:], float64, float64, float64, uint8[:, :], int16[:, :])',
+    nopython=True, nogil=True, cache=True)
+def fire_weapon(
+    player_id: int,
+    pos: ndarray,
+    angle: float,
+    base_damage: float,
+    distance_modifier: float,
+    wall_map: ndarray,
+    player_id_map: ndarray
+) -> tuple[int, int, ndarray, float]:
 
-        return events
+    event_id = EventID.NULL
+    hit_id = np.int16(MapID.PLAYER_ID_NULL)
+    dmg = 0.
 
-    def get_damage(self, pos: np.ndarray, _map: Map) -> float:
-        """
-        Get the damage wrt. player position (distance),
-        without consideration for line of sight.
-        """
+    end_pos = pos + np.array((np.cos(angle), np.sin(angle))) * MAX_SHOT_RANGE
+    hit_pos_checked = trace_shot(player_id, pos, end_pos, wall_map, player_id_map)
 
-        distance = np.linalg.norm(self.pos - pos)
+    # NOTE: Returns zeros if reaching target (max range)
+    if np.any(hit_pos_checked):
+        hit_id = player_id_map[round(hit_pos_checked[1]), round(hit_pos_checked[0])]
 
-        if distance > self.item.radius:
-            return 0.
+        # Check if any entity was hit
+        if hit_id != MapID.PLAYER_ID_NULL:
+            event_id = EventID.PLAYER_DAMAGE
 
-        return (self.item.base_damage + 30.) / (1. + (distance/81.5)**3) - 30.
+            # Get damage based on distance to the target
+            distance = vec2_norm2(pos - hit_pos_checked)
+            dmg = base_damage * distance_modifier ** (distance / DIST_MOD_REF_RANGE)
+
+        else:
+            event_id = EventID.FX_WALL_HIT
+
+    return event_id, hit_id, hit_pos_checked, dmg
+
+
+@jit(
+    'Tuple((int64, int16, float64[:]))'
+    '(int16, float64[:], float64, uint8[:, :], int16[:, :])',
+    nopython=True, nogil=True, cache=True)
+def slash_knife(
+    player_id: int,
+    pos: ndarray,
+    angle: float,
+    wall_map: ndarray,
+    player_id_map: ndarray
+) -> tuple[int, int, ndarray]:
+
+    event_id = EventID.NULL
+    hit_id = np.int16(MapID.PLAYER_ID_NULL)
+
+    end_pos = pos + np.array((np.cos(angle), np.sin(angle))) * KNIFE_REACH
+    hit_pos_checked = trace_shot(player_id, pos, end_pos, wall_map, player_id_map)
+
+    if np.any(hit_pos_checked):
+        hit_id = player_id_map[round(hit_pos_checked[1]), round(hit_pos_checked[0])]
+
+        # Check if any entity was hit
+        if hit_id != MapID.PLAYER_ID_NULL:
+            event_id = EventID.PLAYER_DAMAGE
+
+        else:
+            event_id = EventID.FX_WALL_HIT
+
+    return event_id, hit_id, hit_pos_checked
+
+
+@jit(
+    'float64(float64[:], float64[:], float64, uint8[:, :, :], int16[:, :])',
+    nopython=True, nogil=True, cache=True)
+def get_flash_strength(
+    source_pos: ndarray,
+    pos: ndarray,
+    angle: float,
+    code_map: ndarray,
+    player_id_map: ndarray
+) -> float:
+    """
+    Get the strength of a flash event wrt. flashed player position, angle,
+    and line of sight.
+    """
+
+    wall_map = code_map[np.int64(MapID.CHANNEL_WALL)]
+    zone_map = code_map[np.int64(MapID.CHANNEL_ZONE)]
+
+    if np.any(trace_sight(MapID.PLAYER_ID_NULL, source_pos, pos, wall_map, zone_map, player_id_map)):
+        return 0.
+
+    rel_position = source_pos - pos
+    rel_x, rel_y = rel_position
+    rel_angle = np.arctan2(rel_y, rel_x)
+
+    viewing_angle = fix_angle_range(angle - rel_angle)
+    distance = vec2_norm2(rel_position)
+
+    return (1. - abs(viewing_angle) / F_PI) * max(0., 1. - distance / 216.)
+
+
+@jit(
+    'float64(float64[:], float64[:], float64, float64, uint8[:, :], int16[:, :])',
+    nopython=True, nogil=True, cache=True)
+def get_he_damage(
+    source_pos: ndarray,
+    pos: ndarray,
+    base_damage: float,
+    blast_radius: float,
+    wall_map: ndarray,
+    player_id_map: ndarray
+) -> float:
+    """
+    Get the damage wrt. player position (distance) and line of sight.
+
+    For simplicity, line of sight is only traced to a player's
+    central position, so they can be shielded by a wall even if
+    not fully behind it.
+    """
+
+    if np.any(trace_shot(MapID.PLAYER_ID_NULL, source_pos, pos, wall_map, player_id_map)):
+        return 0.
+
+    distance = vec2_norm2(source_pos - pos)
+
+    if distance > blast_radius:
+        return 0.
+
+    return base_damage / (1. + (distance/15.)**3)
+
+
+@jit(
+    'Tuple((int64, UniTuple(int64[:], 2)))(int16, float64[:], float64, uint8[:, :, :], int16[:, :])',
+    nopython=True, nogil=True, cache=True)
+def set_flame_cover(
+    obj_id: int,
+    pos: ndarray,
+    radius: float,
+    code_map: ndarray,
+    zone_id_map: ndarray
+) -> tuple[int, tuple[ndarray, ndarray]]:
+
+    wall_map = code_map[np.int64(MapID.CHANNEL_WALL)]
+    zone_map = code_map[np.int64(MapID.CHANNEL_ZONE)]
+
+    pos_y, pos_x, radius = round(pos[1]), round(pos[0]), round(radius)
+
+    # Get square base (slice lengths should be odd)
+    slice_y = slice(pos_y - radius, pos_y + radius + 1)
+    slice_x = slice(pos_x - radius, pos_x + radius + 1)
+
+    wall_chunk = wall_map[slice_y, slice_x]
+
+    # Get disk mask
+    cover = get_disk_mask(2*radius + 1)
+
+    # Get flammable ground mask
+    cover &= ~wall_chunk.astype(np.bool_)
+
+    # Get smoke mask
+    zone_chunk = zone_map[slice_y, slice_x]
+    smoke = zone_chunk == np.uint8(MapID.ZONE_SMOKE)
+
+    # Get overlap
+    overlap = cover & smoke
+
+    # Full overlap
+    if np.all(overlap == cover):
+        event_id = EventID.OBJECT_EXPIRE
+
+    # Partial overlap
+    elif np.any(overlap):
+        cover &= ~smoke
+        event_id = EventID.FX_EXTINGUISH
+
+    # No overlap
+    else:
+        event_id = EventID.OBJECT_TRIGGER
+
+    # Get global indices
+    indices_y, indices_x = np.nonzero(cover)
+    indices_y += pos_y - round(radius)
+    indices_x += pos_x - round(radius)
+    cover_indices = indices_y, indices_x
+
+    # Set zone cover
+    fire_id = np.uint8(MapID.ZONE_FIRE)
+
+    for i in range(len(indices_y)):
+        i_y = indices_y[i]
+        i_x = indices_x[i]
+
+        zone_map[i_y, i_x] = fire_id
+        zone_id_map[i_y, i_x] = obj_id
+
+    return event_id, cover_indices
+
+
+@jit(
+    'Tuple((int64, UniTuple(int64[:], 2)))(int16, UniTuple(int64[:], 2), int16[:, :])',
+    nopython=True, nogil=True, cache=True)
+def check_flame_cover(
+    obj_id: int,
+    cover_indices: tuple[ndarray, ndarray],
+    zone_id_map: ndarray
+) -> tuple[int, tuple[ndarray, ndarray]]:
+
+    event_id = EventID.NULL
+    covered_zone_mask = index2_by_tuple(zone_id_map, cover_indices) == obj_id
+
+    # Extinguished
+    if not np.any(covered_zone_mask):
+        event_id = EventID.OBJECT_EXPIRE
+
+    # Partially extinguished
+    elif not np.all(covered_zone_mask):
+        event_id = EventID.FX_EXTINGUISH
+        cover_indices = cover_indices[0][covered_zone_mask], cover_indices[1][covered_zone_mask]
+
+    return event_id, cover_indices
+
+
+@jit(
+    'void(int16, UniTuple(int64[:], 2), uint8[:, :], int16[:, :])',
+    nopython=True, nogil=True, cache=True)
+def clear_zone_cover(
+    obj_id: int,
+    cover_indices: tuple[ndarray, ndarray],
+    zone_map: ndarray,
+    zone_id_map: ndarray
+):
+    """Clear zone and zone ID maps at still covered indices."""
+
+    covered_zone_mask = index2_by_tuple(zone_id_map, cover_indices) == obj_id
+
+    if not np.any(covered_zone_mask):
+        return
+
+    if np.all(covered_zone_mask):
+        indices_y, indices_x = cover_indices
+
+    else:
+        indices_y = cover_indices[0][covered_zone_mask]
+        indices_x = cover_indices[1][covered_zone_mask]
+
+    null_zone_id = np.uint8(MapID.ZONE_NULL)
+    null_obj_id = np.int16(MapID.OBJECT_ID_NULL)
+
+    for i in range(len(indices_y)):
+        i_y = indices_y[i]
+        i_x = indices_x[i]
+
+        zone_map[i_y, i_x] = null_zone_id
+        zone_id_map[i_y, i_x] = null_obj_id
+
+
+@jit(
+    'float64(int16, float64[:], UniTuple(int64[:], 2), float64, float64, float64, int16[:, :])',
+    nopython=True, nogil=True, cache=True)
+def get_flame_damage(
+    obj_id: int,
+    pos: ndarray,
+    covered_indices: tuple[ndarray, ndarray],
+    base_damage: float,
+    duration: float,
+    dt: float,
+    zone_id_map: ndarray
+) -> float:
+    """
+    Get the damage wrt. estimated time that the player has stood on
+    the zone cover claimed by this object for.
+    """
+
+    pos_y = round(pos[1])
+    pos_x = round(pos[0])
+
+    indices_y, indices_x = covered_indices
+
+    for i in range(len(indices_y)):
+        i_y = indices_y[i] + pos_y
+        i_x = indices_x[i] + pos_x
+
+        if zone_id_map[i_y, i_x] == obj_id:
+            return base_damage * dt / duration
+
+    return 0.
+
+
+@jit(
+    'UniTuple(int64[:], 2)(int16, float64[:], float64, uint8[:, :, :], int16[:, :])',
+    nopython=True, nogil=True, cache=True)
+def set_smoke_cover(
+    obj_id: int,
+    pos: ndarray,
+    radius: float,
+    code_map: ndarray,
+    zone_id_map: ndarray
+) -> tuple[ndarray, ndarray]:
+    wall_map = code_map[np.int64(MapID.CHANNEL_WALL)]
+    zone_map = code_map[np.int64(MapID.CHANNEL_ZONE)]
+
+    pos_y, pos_x, radius = round(pos[1]), round(pos[0]), round(radius)
+
+    # Get square base (slice lengths should be odd)
+    slice_y = slice(pos_y - radius, pos_y + radius + 1)
+    slice_x = slice(pos_x - radius, pos_x + radius + 1)
+
+    wall_chunk = wall_map[slice_y, slice_x]
+
+    # Get disk mask
+    cover = get_disk_mask(2*radius + 1)
+
+    # Get ground mask
+    cover &= ~wall_chunk.astype(np.bool_)
+
+    # Get global indices
+    indices_y, indices_x = np.nonzero(cover)
+    indices_y += pos_y - round(radius)
+    indices_x += pos_x - round(radius)
+    cover_indices = indices_y, indices_x
+
+    # Set zone cover
+    smoke_id = np.uint8(MapID.ZONE_SMOKE)
+
+    for i in range(len(indices_y)):
+        i_y = indices_y[i]
+        i_x = indices_x[i]
+
+        zone_map[i_y, i_x] = smoke_id
+        zone_id_map[i_y, i_x] = obj_id
+
+    return cover_indices
+
+
+@jit(
+    'float64(float64[:], float64[:], float64, float64)',
+    nopython=True, nogil=True, cache=True)
+def get_c4_damage(
+    source_pos: ndarray,
+    pos: ndarray,
+    base_damage: float,
+    radius: float,
+) -> float:
+    """
+    Get the damage wrt. player position (distance),
+    without consideration for line of sight.
+    """
+
+    distance = vec2_norm2(source_pos - pos)
+
+    if distance > radius:
+        return 0.
+
+    return (base_damage + 30.) / (1. + (distance / 81.5)**3) - 30.
