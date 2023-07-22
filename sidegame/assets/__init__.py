@@ -61,8 +61,8 @@ class Map:
         spawn_origin_t_y, spawn_origin_t_x = np.nonzero(self.landmark == MapID.LANDMARK_SPAWN_T)
         spawn_origin_ct_y, spawn_origin_ct_x = np.nonzero(self.landmark == MapID.LANDMARK_SPAWN_CT)
 
-        self.spawn_origin_t = np.array((spawn_origin_t_x[0], spawn_origin_t_y[0]))
-        self.spawn_origin_ct = np.array((spawn_origin_ct_x[0], spawn_origin_ct_y[0]))
+        self.spawn_origin_t = np.array((spawn_origin_t_x[0], spawn_origin_t_y[0]), dtype=np.float64)
+        self.spawn_origin_ct = np.array((spawn_origin_ct_x[0], spawn_origin_ct_y[0]), dtype=np.float64)
 
     def reset(self):
         """Fill dynamic maps with null values."""
@@ -351,7 +351,7 @@ class SoundBank(SoundBankBase):
             'beep_a': self.load('c4_beep_a', 'c4', 'c4_beep2.wav'),
             'beep_b': self.load('c4_beep_b', 'c4', 'c4_beep3.wav')}
 
-        self.item_sounds['dkit'] = self.item_sounds['c4']['draw']
+        self.item_sounds['dkit'] = {'draw': self.item_sounds['c4']['draw']}
 
     def load(self, name: str, groupname: str, filename: str, volume_mod: float = 1.) -> list[np.ndarray]:
         """Wrapper around `audio::SoundBank.load` to minimise path specification."""

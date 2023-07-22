@@ -117,7 +117,7 @@ class ThrowableEntity(ColliderEntity):
         super().__init__(1)
 
         self.id = object_id
-        self.pos_target = np.array((np.nan,)*2)
+        self.pos_target = np.array((np.nan, np.nan))
         self.vel = np.array((0., 0.))
 
     def throw(self, pos_thrower: ndarray, pos_target: ndarray, init_throw_vel: float, init_vel: ndarray = None):
@@ -480,18 +480,14 @@ def move_object(
 ) -> tuple[ndarray, ndarray, ndarray, int]:
 
     # Return if no movement issued
-    if np.isnan(pos_target[0]):
+    if not np.any(vel):
         return pos, pos_target, vel, EventID.NULL
 
     # Predict new position
     new_pos = pos + vel * dt
 
     # End movement on overshoot or if velocity indicates too many bounces
-    if (
-        vec2_norm2(new_pos - pos_target) >= vec2_norm2(pos - pos_target) or
-        vec2_norm2(vel) < 1.
-    ):
-        pos_target[0] = np.nan
+    if vec2_norm2(new_pos - pos_target) >= vec2_norm2(pos - pos_target) or vec2_norm2(vel) < 1.:
         vel[:] = 0.
 
         return pos, pos_target, vel, EventID.FX_LAND

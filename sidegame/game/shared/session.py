@@ -152,13 +152,10 @@ class Session:
         # If teams are predetermined, clear and refill them accordingly
         if self.assigned_teams is not None:
             for player_id in tuple(chain(self.players_t, self.players_ct)):
-                events.append(self.move_player(player_id, GameID.GROUP_SPECTATORS))
+                events.extend(self.move_player(player_id, GameID.GROUP_SPECTATORS))
 
             for player_id, team in self.assigned_teams.items():
-                move_event = self.move_player(player_id, team)
-
-                if move_event is not None:
-                    events.append(move_event)
+                events.extend(self.move_player(player_id, team))
 
         events.append(Event(EventID.CTRL_MATCH_STARTED, self.map.id))
 
@@ -456,7 +453,7 @@ class Session:
         del self.groups[player.team][player.id]
         del self.players[player.id]
 
-    def move_player(self, player_id: int, team: int, position_id: int = None) -> Event | None:
+    def move_player(self, player_id: int, team: int, position_id: int = None, drops: bool = False) -> list[Event]:
         """
         Assign the player a new team and a position within it.
         Returns `None` if no positions are free.
@@ -465,7 +462,7 @@ class Session:
         player = self.players.get(player_id, None)
 
         if player is None:
-            return None
+            return Event.EMPTY_EVENT_LIST
 
         # Get position id
         if position_id is None:
@@ -480,7 +477,7 @@ class Session:
                     set(id_range) - set(a_player.position_id for a_player in self.groups[team].values()), default=None)
 
                 if position_id is None:
-                    return None
+                    return Event.EMPTY_EVENT_LIST
 
         # Update groups
         del self.groups[player.team][player_id]
@@ -489,20 +486,25 @@ class Session:
         # Update player-side variables and return resulting team change event
         old_team = player.team
         player_moved_event = player.set_team(team, position_id)
+        events = [player_moved_event]
 
         # When (and if) a player (re)connects, they should start from scratch,
         # i.e. as a new (reset) player in the middle of the round
         if self.phase:
+            if drops and self.phase != GameID.PHASE_RESET and old_team != GameID.GROUP_SPECTATORS:
+                events = player.eval_death(player_moved_event, self.map)
+
             if team != GameID.GROUP_SPECTATORS:
                 player.reset_side()
                 player.reset_round(
                     self.map.spawn_origin_t if team == GameID.GROUP_TEAM_T else self.map.spawn_origin_ct,
                     self.map.player_id)
+
             elif old_team != GameID.GROUP_SPECTATORS:
                 player.reset_side()
                 self.map.player_id[player.get_covered_indices()] = MapID.PLAYER_ID_NULL
 
-        return player_moved_event
+        return events
 
     def check_player_buy_eligibility(self, player_id: int) -> bool:
         """Check if the player can buy wrt. distance to spawn point, match phase, and time."""

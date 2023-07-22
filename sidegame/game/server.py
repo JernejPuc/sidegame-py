@@ -336,27 +336,17 @@ class SDGServer(Server):
 
         # Handle commands/update global history (use queued action logs to add actual logs)
         for log in queued_logs:
-            event = self.handle_user_log(log)
+            ctrl_id = self.handle_user_log(log, queued_events)
 
             # Check for session control flags, otherwise add to standard game events
-            if event is not None:
-                if event.type == EventID.CTRL_MATCH_STARTED:
-                    flag = GameID.CMD_START_MATCH
+            if ctrl_id is None:
+                continue
 
-                elif event.type == EventID.CTRL_MATCH_ENDED:
-                    flag = GameID.CMD_END_MATCH
+            if ctrl_id == EventID.CTRL_MATCH_STARTED:
+                flag = GameID.CMD_START_MATCH
 
-                # TODO: Temporary fix to update clientside money display
-                elif event.type == EventID.OBJECT_SPAWN and log.data[1] == GameID.LOG_BUY:
-                    queued_events.append(event)
-
-                    obj = event.data
-                    queued_events.append(Event(
-                        EventID.OBJECT_ASSIGN,
-                        (obj.owner.id, obj.item.id, 0., 0, 0, 0, obj.owner.money, obj.item.price)))
-
-                else:
-                    queued_events.append(event)
+            elif ctrl_id == EventID.CTRL_MATCH_ENDED:
+                flag = GameID.CMD_END_MATCH
 
         # Update session
         self.session.update(dt * self.time_scale, queued_events, flag=flag)
@@ -369,7 +359,7 @@ class SDGServer(Server):
 
         return new_global_logs
 
-    def handle_user_log(self, log: Action) -> Union[Event, None]:
+    def handle_user_log(self, log: Action, queued_events: list[Event]) -> Union[Event, None]:
         """Verify and evaluate user commands."""
 
         log_data = log.data
@@ -392,7 +382,7 @@ class SDGServer(Server):
             player: Player = self.session.players[player_id]
             name = ''.join(chr(ordinal) for ordinal in log_data[2:6])
 
-            return player.set_name(name)
+            return queued_events.append(player.set_name(name))
 
         elif user_role < GameID.ROLE_PLAYER:
             return None
@@ -405,7 +395,7 @@ class SDGServer(Server):
             if user_role < GameID.ROLE_ADMIN and moved_player_id != player_id:
                 return None
 
-            return self.session.move_player(moved_player_id, team)
+            return queued_events.extend(self.session.move_player(moved_player_id, team, drops=True))
 
         elif log_id == GameID.LOG_BUY:
             can_buy = self.session.check_player_buy_eligibility(player_id)
@@ -413,7 +403,23 @@ class SDGServer(Server):
             if can_buy:
                 player: Player = self.session.players[player_id]
                 item_id = log_data[2]
-                return player.buy(item_id)
+
+                event = player.buy(item_id)
+
+                if event is None:
+                    return None
+
+                if event.type != EventID.OBJECT_SPAWN:
+                    queued_events.append(event)
+
+                # To update clientside money display
+                else:
+                    obj = event.data
+                    aux_event = Event(
+                        EventID.OBJECT_ASSIGN,
+                        (obj.owner.id, obj.item.id, 0., 0, 0, 0, obj.owner.money, obj.item.price))
+
+                    queued_events.extend((event, aux_event))
 
             return None
 
@@ -432,28 +438,28 @@ class SDGServer(Server):
 
             msg = Message(sender_position_id, msg_round, msg_time, words, marks=marks, sender_id=player_id)
 
-            return Event(EventID.PLAYER_MESSAGE, msg)
+            return queued_events.append(Event(EventID.PLAYER_MESSAGE, msg))
 
         elif log_id == GameID.CMD_GET_LATENCY:
             latencies = [
                 (a_player.id, int(min(a_player.latency * 1000., 255.)))
                 for a_player in self.session.players.values() if a_player.team != GameID.GROUP_SPECTATORS][:10]
 
-            return Event(EventID.CTRL_LATENCY_REQUESTED, (player_id, latencies))
+            return queued_events.append(Event(EventID.CTRL_LATENCY_REQUESTED, (player_id, latencies)))
 
         elif user_role < GameID.ROLE_ADMIN:
             return None
 
         # Admin/dev elevated commands
         if log_id == GameID.CMD_START_MATCH:
-            return Event(EventID.CTRL_MATCH_STARTED, None)
+            return EventID.CTRL_MATCH_STARTED
 
         elif log_id == GameID.CMD_END_MATCH:
-            return Event(EventID.CTRL_MATCH_ENDED, None)
+            return EventID.CTRL_MATCH_ENDED
 
         elif log_id == GameID.CMD_END_SESSION:
             self.session_running = False
-            return Event(EventID.CTRL_SESSION_ENDED, None)
+            return queued_events.append(Event(EventID.CTRL_SESSION_ENDED, None))
 
         elif log_id == GameID.CHEAT_END_ROUND:
             # Runs down the timer in the buy or planting phase
@@ -466,12 +472,16 @@ class SDGServer(Server):
         elif log_id == GameID.CHEAT_DEV_MODE:
             player: Player = self.entities[player_id]
             player.dev_mode = not player.dev_mode
-            return Event(EventID.CTRL_PLAYER_CHANGED, (player_id, player.name, player.money, player.dev_mode))
+
+            return queued_events.append(
+                Event(EventID.CTRL_PLAYER_CHANGED, (player_id, player.name, player.money, player.dev_mode)))
 
         elif log_id == GameID.CHEAT_MAX_MONEY:
             player: Player = self.entities[player_id]
             player.money = Player.MONEY_CAP
-            return Event(EventID.CTRL_PLAYER_CHANGED, (player_id, player.name, player.money, player.dev_mode))
+
+            return queued_events.append(
+                Event(EventID.CTRL_PLAYER_CHANGED, (player_id, player.name, player.money, player.dev_mode)))
 
         elif log_id == GameID.CMD_ADD_BOT:
             if self.bot_counter == 256:
@@ -493,8 +503,8 @@ class SDGServer(Server):
 
             self.logger.info('Client %d connected (bot %d).', client_id, bot_counter)
 
-            return Event(EventID.CTRL_PLAYER_CONNECTED, (
-                self.session.time, self.session.total_round_time, self.session.total_match_time, bot.id, bot.name))
+            return queued_events.append(Event(EventID.CTRL_PLAYER_CONNECTED, (
+                self.session.time, self.session.total_round_time, self.session.total_match_time, bot.id, bot.name)))
 
         elif log_id == GameID.CMD_KICK_NAME:
             kicked_name = ''.join(chr(ordinal) for ordinal in log_data[2:6])
@@ -531,7 +541,7 @@ class SDGServer(Server):
             else:
                 self.bot_counter -= 1
 
-            return Event(EventID.CTRL_PLAYER_DISCONNECTED, kicked_id)
+            return queued_events.append(Event(EventID.CTRL_PLAYER_DISCONNECTED, kicked_id))
 
         return None
 

@@ -332,7 +332,7 @@ class Simulation:
 
                     else:
                         window[:108, 64:] = draw_overlay(
-                            window[:108, 64:], self.overlay_store_c, opacity=0.65)
+                            window[:108, 64:], self.overlay_store_ct, opacity=0.65)
 
                         self.draw_cursor_obs_from_code_view(window, self.code_view_store_ct)
 
@@ -534,7 +534,7 @@ class Simulation:
             draw_number(window, digits, int(10*(kdr - int(kdr))), 10 + i*9, 110)
 
             if observer_team != GameID.GROUP_TEAM_CT:
-                draw_number(window, money, 10 + i*9, 138)
+                draw_number(window, digits, money, 10 + i*9, 138)
 
         for i, (kdr, pos_id, health, money) in enumerate(stats_ct):
             if not health:
