@@ -190,7 +190,7 @@ class ImageBank(dict):
             self.sprites[(GameID.GROUP_TEAM_CT, i)] = self.load(f'sprite_ct_{i}', 'sprites', f'ct_{i}.png')
 
         self.sprites[(GameID.GROUP_TEAM_T, -1)] = self.load('sprite_t_-1', 'sprites', 't_dead.png')
-        self.sprites[(GameID.GROUP_TEAM_T, -1)] = self.load('sprite_ct_-1', 'sprites', 'ct_dead.png')
+        self.sprites[(GameID.GROUP_TEAM_CT, -1)] = self.load('sprite_ct_-1', 'sprites', 'ct_dead.png')
 
         # Associate colours with player position ids
         for key, val in self.COLOURS.items():

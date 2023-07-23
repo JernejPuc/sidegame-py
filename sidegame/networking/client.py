@@ -8,7 +8,6 @@ https://www.gabrielgambetta.com/client-server-game-architecture.html
 """
 
 import logging
-from socket import timeout
 from collections import deque
 from abc import ABC, abstractmethod
 from typing import Any, Deque, Dict, Iterable, List, Tuple, Union
@@ -343,6 +342,13 @@ class LiveClient(ClientBase):
         self.session_running: bool = None
         self.logger.debug('Connected to server.')
 
+    def _log_error(self, msg: str):
+        if self.logger.getEffectiveLevel() == logging.DEBUG:
+            self.logger.error(msg, exc_info=True)
+
+        else:
+            self.logger.error(msg)
+
     def _clock(self) -> float:
         return (perf_counter_ns() - self._clock_ref) * 1e-9
 
@@ -356,10 +362,10 @@ class LiveClient(ClientBase):
             try:
                 reply = self._socket.exchange(request, self._clock())
 
-            except (AssertionError, ConnectionError, timeout) as exc:
-                self.logger.debug('Could not connect to the matchmaking server.')
+            except (AssertionError, ConnectionError, ConnectionRefusedError, TimeoutError):
+                self._log_error('Could not connect to the matchmaking server.')
                 self._socket.close()
-                raise exc
+                raise SystemExit
 
             redirection_address = self.unpack_redirection_address(reply)
 
@@ -380,10 +386,10 @@ class LiveClient(ClientBase):
         try:
             reply = self._socket.exchange(request, self._clock())
 
-        except (AssertionError, ConnectionError, timeout) as exc:
-            self.logger.debug('Could not connect to the session server.')
+        except (AssertionError, ConnectionError, ConnectionRefusedError, TimeoutError):
+            self._log_error('Could not connect to the session server.')
             self._socket.close()
-            raise exc
+            raise SystemExit
 
         return reply
 
@@ -440,8 +446,8 @@ class LiveClient(ClientBase):
         except KeyboardInterrupt:
             self.logger.debug('Process ended by user.')
 
-        except ConnectionError:
-            self.logger.debug('Lost connection to the server.')
+        except (ConnectionError, TimeoutError):
+            self._log_error('Lost connection to the server.')
 
         else:
             self.logger.debug('Session ended.')

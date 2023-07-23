@@ -153,6 +153,8 @@ server and can be used freely.
     and prevent incoming damage from affecting health points.
     - `max money`: Set money to its cap value.
     - `rundown`: Run down the timer for the buy or main (plant) phase.
+    - `add bot`: Add an unresponsive entity to the spectators group.
+    - `kick A`: Remove client with ID `A` from the remainder of the session.
 
 
 ### AI actor interface

@@ -175,24 +175,24 @@ class SDGLiveClient(SDGLiveClientBase):
                 raise KeyboardInterrupt
 
             elif event_type == sdl2.SDL_KEYDOWN:
-                keysim = event.key.keysym.sym
+                keysym = event.key.keysym.sym
 
                 # General
-                if keysim == sdl2.SDLK_UP:
+                if keysym == sdl2.SDLK_UP:
                     sim.audio_system.volume = min(2., sim.audio_system.volume + 0.05)
                     self.logger.info('Volume increased to %.2f', sim.audio_system.volume)
 
-                elif keysim == sdl2.SDLK_DOWN:
+                elif keysym == sdl2.SDLK_DOWN:
                     sim.audio_system.volume = max(0., sim.audio_system.volume - 0.05)
                     self.logger.info('Volume decreased to %.2f', sim.audio_system.volume)
 
                 # In lobby
                 elif sim.view == GameID.VIEW_LOBBY:
-                    if keysim == sdl2.SDLK_ESCAPE:
+                    if keysym == sdl2.SDLK_ESCAPE:
                         continue
 
                     # Evaluate console command
-                    elif keysim == sdl2.SDLK_RETURN:
+                    elif keysym == sdl2.SDLK_RETURN:
                         if sim.console_text == 'exit':
                             raise KeyboardInterrupt
 
@@ -214,16 +214,16 @@ class SDGLiveClient(SDGLiveClientBase):
 
                             print(print_string)
 
-                        elif sim.console_text.startswith('kick name'):
-                            name = [
-                                min(ord(m), 255)
-                                for m in sim.console_text[10:14] + ' '*(4-len(sim.console_text[10:14]))]
-                            log = [sim.own_player_id, GameID.CMD_KICK_NAME, *name, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.]
+                        elif sim.console_text.startswith('kick'):
+                            words = sim.console_text.split(' ')
+                            kicked_player_id = int(words[1])
+
+                            log = [sim.own_player_id, GameID.CMD_KICK, kicked_player_id, *(0,)*12, 0.]
 
                         elif sim.console_text.startswith('set name'):
                             name = [
                                 min(ord(m), 255) for m in sim.console_text[9:13] + ' '*(4-len(sim.console_text[9:13]))]
-                            log = [sim.own_player_id, GameID.CMD_SET_NAME, *name, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.]
+                            log = [sim.own_player_id, GameID.CMD_SET_NAME, *name, *(0,)*9, 0.]
 
                         elif sim.console_text.startswith('set team'):
                             words = sim.console_text.split(' ')
@@ -257,8 +257,7 @@ class SDGLiveClient(SDGLiveClientBase):
 
                             if team != GameID.NULL:
                                 log = [
-                                    sim.own_player_id, GameID.CMD_SET_TEAM, moved_player_id, team,
-                                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.]
+                                    sim.own_player_id, GameID.CMD_SET_TEAM, moved_player_id, team, *(0,)*11, 0.]
 
                         elif sim.console_text.startswith('set role'):
                             self.role_key = '0x' + sim.console_text.split(' ')[-1]
@@ -268,53 +267,52 @@ class SDGLiveClient(SDGLiveClientBase):
 
                                 fractured_role_key = struct.unpack('>4B', struct.pack('>L', role_key))
                                 log = [
-                                    sim.own_player_id, GameID.CMD_SET_ROLE, *fractured_role_key,
-                                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0.]
+                                    sim.own_player_id, GameID.CMD_SET_ROLE, *fractured_role_key, *(0,)*9, 0.]
 
                             except ValueError:
                                 self.logger.warning('Invalid role key.')
 
                         elif sim.console_text in sim.CONSOLE_COMMANDS:
                             cmd = sim.CONSOLE_COMMANDS[sim.console_text]
-                            log = [sim.own_player_id, cmd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.]
+                            log = [sim.own_player_id, cmd, *(0,)*13, 0.]
 
                         sim.console_text = ''
 
                     # Remove character from text
-                    elif keysim == sdl2.SDLK_BACKSPACE:
+                    elif keysym == sdl2.SDLK_BACKSPACE:
                         sim.console_text = sim.console_text[:-1]
 
                     # Add character to text
-                    elif len(sim.console_text) < 23 and (0 <= keysim <= 1114111):
-                        sim.console_text += chr(keysim)
+                    elif len(sim.console_text) < 23 and (0 <= keysym <= 1114111):
+                        sim.console_text += chr(keysym)
 
                 # Spectator in world view
                 elif session.is_spectator(sim.own_player_id):
-                    if keysim == sdl2.SDLK_TAB and session.phase:
+                    if keysym == sdl2.SDLK_TAB and session.phase:
                         sim.view = GameID.VIEW_MAPSTATS
 
                 # Player in world view
                 elif session.phase:
-                    if keysim == sdl2.SDLK_w:
+                    if keysym == sdl2.SDLK_w:
                         self.mkbd_state[self.MKBD_IDX_W] = 1
-                    elif keysim == sdl2.SDLK_s:
+                    elif keysym == sdl2.SDLK_s:
                         self.mkbd_state[self.MKBD_IDX_S] = -1
-                    elif keysim == sdl2.SDLK_d:
+                    elif keysym == sdl2.SDLK_d:
                         self.mkbd_state[self.MKBD_IDX_D] = 1
-                    elif keysim == sdl2.SDLK_a:
+                    elif keysym == sdl2.SDLK_a:
                         self.mkbd_state[self.MKBD_IDX_A] = -1
-                    elif keysim == sdl2.SDLK_e:
+                    elif keysym == sdl2.SDLK_e:
                         self.mkbd_state[self.MKBD_IDX_E] = 1
 
-                    elif keysim == sdl2.SDLK_x and sim.view != GameID.VIEW_TERMS:
+                    elif keysym == sdl2.SDLK_x and sim.view != GameID.VIEW_TERMS:
                         sim.view = GameID.VIEW_TERMS
                         sim.cursor_y, sim.cursor_x = sim.WORLD_FRAME_CENTRE
 
-                    elif keysim == sdl2.SDLK_c and sim.view != GameID.VIEW_ITEMS:
+                    elif keysym == sdl2.SDLK_c and sim.view != GameID.VIEW_ITEMS:
                         sim.view = GameID.VIEW_ITEMS
                         sim.cursor_y, sim.cursor_x = sim.WORLD_FRAME_CENTRE
 
-                    elif keysim == sdl2.SDLK_b and sim.view != GameID.VIEW_STORE:
+                    elif keysym == sdl2.SDLK_b and sim.view != GameID.VIEW_STORE:
                         can_view_store = sim.observed_player_id == sim.own_player_id and \
                             session.check_player_buy_eligibility(sim.own_player_id)
 
@@ -322,27 +320,27 @@ class SDGLiveClient(SDGLiveClientBase):
                             sim.view = GameID.VIEW_STORE
                             sim.cursor_y, sim.cursor_x = sim.WORLD_FRAME_CENTRE
 
-                    elif keysim == sdl2.SDLK_TAB:
+                    elif keysym == sdl2.SDLK_TAB:
                         sim.view = GameID.VIEW_MAPSTATS
 
-                    elif keysim == sdl2.SDLK_r:
+                    elif keysym == sdl2.SDLK_r:
                         kbd_r = 1
-                    elif keysim == sdl2.SDLK_g:
+                    elif keysym == sdl2.SDLK_g:
                         kbd_g = 1
 
-                    elif keysim == sdl2.SDLK_1:
+                    elif keysym == sdl2.SDLK_1:
                         kbd_num = 1
-                    elif keysim == sdl2.SDLK_2:
+                    elif keysym == sdl2.SDLK_2:
                         kbd_num = 2
-                    elif keysim == sdl2.SDLK_3:
+                    elif keysym == sdl2.SDLK_3:
                         kbd_num = 3
-                    elif keysim == sdl2.SDLK_4:
+                    elif keysym == sdl2.SDLK_4:
                         kbd_num = 4
-                    elif keysim == sdl2.SDLK_5:
+                    elif keysym == sdl2.SDLK_5:
                         kbd_num = 5
 
                     # NOTE: Apparently keydown keeps triggering on hold...
-                    elif keysim == sdl2.SDLK_SPACE:
+                    elif keysym == sdl2.SDLK_SPACE:
                         if self.mkbd_state[self.MKBD_IDX_SPACE]:
                             if sim.message_draft and (timestamp - self.space_time) > 0.5:
                                 sim.clear_message_draft()
@@ -351,10 +349,10 @@ class SDGLiveClient(SDGLiveClientBase):
                             self.space_time = timestamp
 
             elif event_type == sdl2.SDL_KEYUP:
-                keysim = event.key.keysym.sym
+                keysym = event.key.keysym.sym
 
                 # Take screenshot
-                if keysim == sdl2.SDLK_F12:
+                if keysym == sdl2.SDLK_F12:
                     if not os.path.exists(DATA_DIR):
                         os.makedirs(DATA_DIR)
 
@@ -369,35 +367,35 @@ class SDGLiveClient(SDGLiveClientBase):
 
                     self.logger.info("Screenshot saved to: '%s'.", file_path)
 
-                elif keysim == sdl2.SDLK_w:
+                elif keysym == sdl2.SDLK_w:
                     self.mkbd_state[self.MKBD_IDX_W] = 0
-                elif keysim == sdl2.SDLK_s:
+                elif keysym == sdl2.SDLK_s:
                     self.mkbd_state[self.MKBD_IDX_S] = 0
-                elif keysim == sdl2.SDLK_d:
+                elif keysym == sdl2.SDLK_d:
                     self.mkbd_state[self.MKBD_IDX_D] = 0
-                elif keysim == sdl2.SDLK_a:
+                elif keysym == sdl2.SDLK_a:
                     self.mkbd_state[self.MKBD_IDX_A] = 0
-                elif keysim == sdl2.SDLK_e:
+                elif keysym == sdl2.SDLK_e:
                     self.mkbd_state[self.MKBD_IDX_E] = 0
 
-                elif keysim == sdl2.SDLK_ESCAPE:
+                elif keysym == sdl2.SDLK_ESCAPE:
                     if sim.view == GameID.VIEW_LOBBY:
                         sim.enter_world()
                     else:
                         sim.exit_world()
 
                 # Add term to message
-                elif keysim == sdl2.SDLK_x and sim.view == GameID.VIEW_TERMS:
+                elif keysym == sdl2.SDLK_x and sim.view == GameID.VIEW_TERMS:
                     sim.view = GameID.VIEW_WORLD
                     log = sim.create_log(GameID.EVAL_MSG_TERM)
 
                 # Add item to message
-                elif keysim == sdl2.SDLK_c and sim.view == GameID.VIEW_ITEMS:
+                elif keysym == sdl2.SDLK_c and sim.view == GameID.VIEW_ITEMS:
                     sim.view = GameID.VIEW_WORLD
                     log = sim.create_log(GameID.EVAL_MSG_ITEM)
 
                 # Send message
-                elif keysim == sdl2.SDLK_SPACE and sim.view != GameID.VIEW_LOBBY and (
+                elif keysym == sdl2.SDLK_SPACE and sim.view != GameID.VIEW_LOBBY and (
                     not session.is_spectator(sim.own_player_id)
                 ):
                     log = sim.create_log(GameID.EVAL_MSG_SEND)
@@ -405,11 +403,11 @@ class SDGLiveClient(SDGLiveClientBase):
                     self.space_time = 0.
 
                 # Buy an item
-                elif keysim == sdl2.SDLK_b and sim.view == GameID.VIEW_STORE:
+                elif keysym == sdl2.SDLK_b and sim.view == GameID.VIEW_STORE:
                     sim.view = GameID.VIEW_WORLD
                     log = sim.create_log(GameID.EVAL_BUY)
 
-                elif keysim == sdl2.SDLK_TAB and sim.view == GameID.VIEW_MAPSTATS:
+                elif keysym == sdl2.SDLK_TAB and sim.view == GameID.VIEW_MAPSTATS:
                     sim.view = GameID.VIEW_WORLD
 
             # Update scroll position, enforcing valid range

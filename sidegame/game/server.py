@@ -506,25 +506,16 @@ class SDGServer(Server):
             return queued_events.append(Event(EventID.CTRL_PLAYER_CONNECTED, (
                 self.session.time, self.session.total_round_time, self.session.total_match_time, bot.id, bot.name)))
 
-        elif log_id == GameID.CMD_KICK_NAME:
-            kicked_name = ''.join(chr(ordinal) for ordinal in log_data[2:6])
-            kicked_id = None
-            kicked_player = None
+        elif log_id == GameID.CMD_KICK:
+            kicked_id = log_data[2]
+            kicked_player = self.session.players.get(kicked_id)
 
-            for player_id, player in self.session.players.items():
-                if player.name == kicked_name:
-                    kicked_id = player.id
-                    kicked_player = player
-                    break
-
-            if kicked_id is None:
+            if kicked_player is None:
                 return None
 
-            else:
-                self.session.remove_player(kicked_player)
-
-                if self.session.map is not None:
-                    self.session.map.player_id[kicked_player.get_covered_indices()] = MapID.PLAYER_ID_NULL
+            queued_events.extend(self.session.move_player(kicked_id, GameID.GROUP_SPECTATORS, drops=True))
+            self.session.remove_player(kicked_player)
+            self.session.map.player_id[kicked_player.get_covered_indices()] = MapID.PLAYER_ID_NULL
 
             if kicked_id in self.entities:
                 del self.entities[kicked_id]

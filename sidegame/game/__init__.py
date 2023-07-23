@@ -92,7 +92,7 @@ class GameID(IntEnum):
     CMD_SET_ROLE = 216
     CMD_GET_LATENCY = 217
     CMD_ADD_BOT = 218
-    CMD_KICK_NAME = 219
+    CMD_KICK = 219
 
     LOG_BUY = 221
     LOG_MESSAGE = 222

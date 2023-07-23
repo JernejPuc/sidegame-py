@@ -178,7 +178,8 @@ class Knife(Object):
     ) -> list[Event]:
         """Try to attack, returning damage, hit, and sound events."""
 
-        owner_id = self.owner_id
+        owner_angle = self.owner.angle
+        owner_id = self.owner.id
         item_id = self.item.id
         events = []
 
@@ -186,11 +187,11 @@ class Knife(Object):
         events.append(Event(EventID.FX_ATTACK, (owner_id, item_id)))
 
         # Get hits
-        for swipe_angle in self.SWIPE_ANGLES + self.owner.angle:
+        for swipe_angle in self.SWIPE_ANGLES + owner_angle:
             event_id, hit_id, hit_pos = slash_knife(owner_id, pos, swipe_angle, wall_map, player_id_map)
 
             if event_id == EventID.PLAYER_DAMAGE:
-                dmg = self.get_damage(self.owner.angle, players[hit_id].angle)
+                dmg = self.get_damage(owner_angle, players[hit_id].angle)
                 events.append(Event(event_id, (owner_id, hit_id, item_id, dmg)))
                 break
 

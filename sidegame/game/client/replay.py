@@ -363,31 +363,31 @@ class SDGReplayClient(ReplayClient):
                 return self.CMD_EXIT, None
 
             elif event_type == sdl2.SDL_KEYDOWN:
-                keysim = event.key.keysym.sym
+                keysym = event.key.keysym.sym
 
                 # Check map/scoreboard
-                if keysim == sdl2.SDLK_TAB and self.session.phase and self.session.is_spectator(self.sim.own_player_id):
+                if keysym == sdl2.SDLK_TAB and self.session.phase and self.session.is_spectator(self.sim.own_player_id):
                     self.sim.view = GameID.VIEW_MAPSTATS
 
                 # Volume
-                elif keysim == sdl2.SDLK_UP:
+                elif keysym == sdl2.SDLK_UP:
                     self.sim.audio_system.volume = min(2., self.sim.audio_system.volume + 0.05)
                     self.logger.info('Volume increased to %.2f', self.sim.audio_system.volume)
 
-                elif keysim == sdl2.SDLK_DOWN:
+                elif keysym == sdl2.SDLK_DOWN:
                     self.sim.audio_system.volume = max(0., self.sim.audio_system.volume - 0.05)
                     self.logger.info('Volume decreased to %.2f', self.sim.audio_system.volume)
 
             elif event_type == sdl2.SDL_KEYUP:
-                keysim = event.key.keysym.sym
+                keysym = event.key.keysym.sym
 
                 # Check map/scoreboard
-                if keysim == sdl2.SDLK_TAB and self.sim.view == GameID.VIEW_MAPSTATS:
+                if keysym == sdl2.SDLK_TAB and self.sim.view == GameID.VIEW_MAPSTATS:
                     if self.session.phase and self.session.is_spectator(self.sim.own_player_id):
                         self.sim.view = GameID.VIEW_WORLD
 
                 # Take screenshot
-                elif keysim == sdl2.SDLK_F12:
+                elif keysym == sdl2.SDLK_F12:
                     if not os.path.exists(DATA_DIR):
                         os.makedirs(DATA_DIR)
 
@@ -403,11 +403,11 @@ class SDGReplayClient(ReplayClient):
                     self.logger.info("Screenshot saved to: '%s'.", file_path)
 
                 # Quit
-                elif keysim == sdl2.SDLK_ESCAPE:
+                elif keysym == sdl2.SDLK_ESCAPE:
                     return self.CMD_EXIT, None
 
                 # (Un)Pause
-                elif keysim == sdl2.SDLK_SPACE or keysim == sdl2.SDLK_k:
+                elif keysym == sdl2.SDLK_SPACE or keysym == sdl2.SDLK_k:
                     self.paused = not self.paused
 
                     if self.focus.mode == FocusTracker.MODE_WRITE:
@@ -416,7 +416,7 @@ class SDGReplayClient(ReplayClient):
                     self.logger.info('Replay paused.' if self.paused else 'Replay resumed.')
 
                 # Speed up
-                elif keysim == sdl2.SDLK_RIGHT:
+                elif keysym == sdl2.SDLK_RIGHT:
                     self.speedup_idx = min(len(self.SPEEDUPS)-1, self.speedup_idx+1)
                     self.change_replay_speed(speedup=self.SPEEDUPS[self.speedup_idx])
 
@@ -426,7 +426,7 @@ class SDGReplayClient(ReplayClient):
                     self.logger.info('Replay speed changed to %.2f.', self.SPEEDUPS[self.speedup_idx])
 
                 # Slow down
-                elif keysim == sdl2.SDLK_LEFT:
+                elif keysym == sdl2.SDLK_LEFT:
                     self.speedup_idx = max(0, self.speedup_idx-1)
                     self.change_replay_speed(speedup=self.SPEEDUPS[self.speedup_idx])
 
@@ -436,22 +436,22 @@ class SDGReplayClient(ReplayClient):
                     self.logger.info('Replay speed changed to %.2f.', self.SPEEDUPS[self.speedup_idx])
 
                 # Restart
-                elif keysim == sdl2.SDLK_BACKSPACE or keysim == sdl2.SDLK_RETURN:
+                elif keysym == sdl2.SDLK_BACKSPACE or keysym == sdl2.SDLK_RETURN:
                     self.logger.info('Restarting replay...')
                     return self.CMD_NONE, self.jump_to_timestamp(current_timestamp, 0.)
 
                 # Jump 10 secs ahead
-                elif keysim == sdl2.SDLK_l:
+                elif keysym == sdl2.SDLK_l:
                     self.logger.info('Forwarding 10 seconds ahead...')
                     return self.CMD_NONE, self.jump_to_timestamp(current_timestamp, current_timestamp + 10.)
 
                 # Jump 10 secs back
-                elif keysim == sdl2.SDLK_j:
+                elif keysym == sdl2.SDLK_j:
                     self.logger.info('Rewinding 10 seconds back...')
                     return self.CMD_NONE, self.jump_to_timestamp(current_timestamp, max(0., current_timestamp - 10.))
 
                 # Toggle labelling/display
-                elif keysim == sdl2.SDLK_x:
+                elif keysym == sdl2.SDLK_x:
                     if self.focus.mode != FocusTracker.MODE_NULL:
                         self.focus.active = not self.focus.active
 

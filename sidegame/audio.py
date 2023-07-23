@@ -146,6 +146,29 @@ def load_audio():
     return audio
 
 
+class DummyAudioSystem:
+    """
+    A placeholder. Covers all the required methods, but outputs nothing.
+    Intended for debugging to prevent multiple local clients from interfering
+    by duplicating sounds.
+    """
+
+    def __init__(self, *args, max_n_sounds: int = 32, **kwargs):
+        self._audio_channels: List[Deque[OrientedSound]] = [deque() for _ in range(max_n_sounds)]
+
+    def start(self):
+        pass
+
+    def stop(self):
+        pass
+
+    def step(self):
+        pass
+
+    def queue_sound(self, *args, **kwargs):
+        pass
+
+
 class PlanarAudioSystem:
     """
     An audio system using HRIR, low-pass, and scaling filters to simulate

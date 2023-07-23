@@ -464,6 +464,9 @@ class Session:
         if player is None:
             return Event.EMPTY_EVENT_LIST
 
+        if player.team == team:
+            return Event.EMPTY_EVENT_LIST
+
         # Get position id
         if position_id is None:
             if team == GameID.GROUP_SPECTATORS:

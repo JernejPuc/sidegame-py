@@ -8,7 +8,7 @@ from numba import jit
 
 from sidegame.assets import ImageBank, SoundBank, MapID, MAP_WARP
 from sidegame.utils_jit import vec2_norm2, vec2_rot_, fix_angle_range, get_disk_indices, F_PI2, F_2PI, RAD_DIV_DEG
-from sidegame.audio import PlanarAudioSystem as AudioSystem
+from sidegame.audio import PlanarAudioSystem as AudioSystem, DummyAudioSystem
 from sidegame.physics import trace_sight, MAX_VIEW_RANGE
 from sidegame.effects import Effect
 from sidegame.graphics import (
@@ -54,7 +54,7 @@ class Simulation:
         'dev mode': GameID.CHEAT_DEV_MODE,
         'max money': GameID.CHEAT_MAX_MONEY,
         'add bot': GameID.CMD_ADD_BOT,
-        'kick name': GameID.CMD_KICK_NAME}
+        'kick': GameID.CMD_KICK}
 
     DEFAULT_OBS = (np.inf, MapID.PLAYER_ID_NULL, GameID.NULL)
 
@@ -86,7 +86,7 @@ class Simulation:
         else:
             self.images, self.sounds, self.inventory = assets
 
-        self.audio_system = AudioSystem(
+        self.audio_system = DummyAudioSystem() if audio_device == -1 else AudioSystem(
             step_freq=tick_rate,
             max_distance=self.AUDIO_MAX_DISTANCE,
             distance_scaling=self.AUDIO_DISTANCE_SCALING,

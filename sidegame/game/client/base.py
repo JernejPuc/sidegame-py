@@ -992,11 +992,11 @@ def interpolate_player(
     update_collider_map(covered_indices, player_id_map, old_pos, pos, player_id, MapID.PLAYER_ID_NULL)
 
     # Interpolate angle
-    angle = angle_lerp(state_2[3], state_1[3], state_ratio)
+    angle = angle_lerp(state_2[2], state_1[2], state_ratio)
 
     # Interpolate recoil
     vec2_lerp_(pos_rec, state_2[4:6], state_1[4:6], state_ratio)
 
-    angle_rec = angle_lerp(state_2[4], state_1[4], state_ratio)
+    angle_rec = angle_lerp(state_2[3], state_1[3], state_ratio)
 
     return angle, angle_rec
