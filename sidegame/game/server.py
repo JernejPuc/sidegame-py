@@ -80,30 +80,30 @@ class SDGServer(Server):
         return Player(entity_id, self.inventory, rng=self.rng)
 
     def handle_missing_entities(self, missing_entity_ids: List[int]) -> Iterable[Tuple[int, Any]]:
-        removal_logs = []
+        events = []
 
         for entity_id in missing_entity_ids:
             # Remove from session
             if entity_id in self.session.players:
                 player = self.session.players[entity_id]
+
+                events.extend(self.session.move_player(entity_id, GameID.GROUP_SPECTATORS, drops=True))
                 self.session.remove_player(player)
-
-                if self.session.map is not None:
-                    self.session.map.player_id[player.get_covered_indices()] = MapID.PLAYER_ID_NULL
-
-                # Generate disconnection log for clients
-                data = [
-                    float(entity_id), 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0, 0,
-                    EventID.CTRL_PLAYER_DISCONNECTED]
+                self.session.map.player_id[player.get_covered_indices()] = MapID.PLAYER_ID_NULL
 
                 # NOTE: These logs bypass queued events
                 # (because they are handled after send, after queued events have already been logged)
-                removal_logs.append((self.ENV_ID, data))
+                events.append((Event(EventID.CTRL_PLAYER_DISCONNECTED, entity_id)))
 
             # Remove from known entities
             del self.entities[entity_id]
 
-        return removal_logs
+        # Add newly spawned object to tracked objects
+        for event in events:
+            if event.type == EventID.OBJECT_SPAWN:
+                self.session.add_object(event.data)
+
+        return [self.create_global_log(event) for event in events]
 
     def unpack_client_data(self, data: Iterable[bytes]) -> Tuple[Iterable[Action], int]:
         actions, counters = zip(*(self.unpack_single(packet) for packet in data))

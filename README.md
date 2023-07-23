@@ -157,7 +157,7 @@ server and can be used freely.
     - `kick A`: Remove client with ID `A` from the remainder of the session.
 
 
-### AI actor interface
+### AI actor interface (deprecated & undergoing revision)
 
 Actor implementations can inherit from the `sidegame.game.client.base::SDGLiveClientBase`
 class and facilitate interaction with a pre-trained model, remote inference or
@@ -171,25 +171,20 @@ although highly overfitted and not very useful in practice.
 
 ### Notes on performance
 
-At its base resolution (`256x144`), `sidegame` should be able to be rendered
-at hundreds of FPS (on average - drops can still occur), which should
+`sidegame` should be able to be rendered at hundreds to a thousand of FPS
+on a single thread (on average - drops can still occur), which should
 make it light enough for AI training setups. In distributed setups,
 note that network and device synchronisation also play a role.
 
 For human interfaces, it is expected to be upscaled to higher resolutions,
 using the argument `render_scale`. Here are a few scale-to-resolution correspondences:
 - `0` -- **Fullscreen**
+- `1` -- `256x144` **(original)**
 - `4` -- `1024x576`
 - `5` -- `1280x720`
 - `6.25` -- `1600x900`
 - `7.5` -- `1920x1080`
 - `10` -- `2560x1440`
-
-Presently, going above 144FPS is not recommended, because it seems that
-resources start to be taken away from the audio streaming thread in the background
-(subject to Python's [GIL](https://docs.python.org/3/library/threading.html))
-and sounds may become choppy. This does not have to be an issue in AI actors,
-because audio processing can be explicitly stepped at the time of rendering.
 
 
 ### Notes on networking
