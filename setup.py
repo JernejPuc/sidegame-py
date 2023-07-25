@@ -37,7 +37,7 @@ setup(
     ],
     platforms=['Windows', 'Linux'],
     packages=['sidegame', 'sdgai'],
-    package_data={'sidegame': ['assets/*.png', 'assets/*.wav', 'assets/*.npy']},
+    package_data={'sidegame': ['assets/*.png', 'assets/*.wav', 'assets/*.npy', 'assets/*.json']},
     data_files=[('user_data', ['*.json'])],
     python_requires='~=3.11',
     install_requires=requirements,

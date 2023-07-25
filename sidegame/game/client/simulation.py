@@ -134,11 +134,11 @@ class Simulation:
         self.footsteps = self.sounds.footsteps
 
         # Image bank
-        self.icon_console_pointer = self.images['icon_console_pointer']
-        self.icon_cursor = self.images['icon_cursor']
-        self.icon_selected = self.images['icon_selected']
-        self.icon_reset = self.images['icon_reset']
-        self.icon_store = self.images['icon_store']
+        self.icon_console_pointer = self.images['pointer_console']
+        self.icon_cursor = self.images['pointer_cursor']
+        self.icon_selected = self.images['pointer_item']
+        self.icon_reset = self.images['phase_reset']
+        self.icon_store = self.images['phase_buy']
         self.icon_kill = self.images['term_kill']
         self.icon_c4 = self.images['item_c4']
         self.icon_placeholder = self.images['term_stop']

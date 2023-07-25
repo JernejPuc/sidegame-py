@@ -1,3 +1,4 @@
+import json
 import os
 from enum import IntEnum
 
@@ -101,15 +102,12 @@ class ImageBank(dict):
     def __init__(self):
         super().__init__()
 
-        # TODO: Read from fewer files and split at init
+        # Read from fewer files and split at init
+        with open(os.path.join(ASSET_DIR, 'sheets', 'slices.json'), 'r') as f:
+            slice_map = json.load(f)
 
         # Characters and digits
-        self.characters: dict[str, np.ndarray] = {}
-
-        for charfile in os.listdir(os.path.join(ASSET_DIR, 'characters')):
-            char = charfile.split('_')[1][:-4]
-            self.characters[char] = self.load(char, 'characters', charfile)
-
+        self.characters = self.load_sheet(slice_map, 'characters.png')
         self.digits: tuple[np.ndarray, ...] = tuple(self.characters[str(num)] for num in range(10))
 
         # FoV endpoints
@@ -118,6 +116,7 @@ class ImageBank(dict):
         # View-related
         self.load('window_base_lobby', 'views', 'lobby.png')
         self.load('window_base_world', 'views', 'main.png')
+
         self.load('overlay_mapstats', 'views', 'mapstats.png')
         self.load('overlay_terms', 'views', 'terms.png')
         self.load('overlay_items', 'views', 'items.png')
@@ -130,48 +129,7 @@ class ImageBank(dict):
         self.load('code_view_store_ct', 'views', 'code_store_ct.png', mode=cv2.IMREAD_GRAYSCALE)
 
         # Specific icons
-        self.load('icon_console_pointer', 'icons', 'pointer_console.png')
-        self.load('icon_cursor', 'icons', 'pointer_cursor.png')
-        self.load('icon_selected', 'icons', 'pointer_item.png')
-        self.load('icon_reset', 'icons', 'phase_reset.png')
-        self.load('icon_store', 'icons', 'phase_buy.png')
-
-        self.load('group_spectators', 'icons', 'team_spectator.png')
-        self.load('group_team_t', 'icons', 'team_t.png'),
-        self.load('group_team_ct', 'icons', 'team_ct.png')
-
-        for i in range(5):
-            self.load(f'player_t{i+1}', 'icons', f'agent_t_{i}.png')
-            self.load(f'player_ct{i+1}', 'icons', f'agent_ct_{i}.png')
-            self.load(f'mark_t{i+1}', 'icons', f'ping_t_{i}.png')
-            self.load(f'mark_ct{i+1}', 'icons', f'ping_ct_{i}.png')
-
-        self.load('term_kill', 'icons', 'term_kill.png')
-        self.load('term_move', 'icons', 'term_move.png')
-        self.load('term_hold', 'icons', 'term_hold.png')
-        self.load('term_see', 'icons', 'term_see.png')
-        self.load('term_stop', 'icons', 'term_fullstop.png')
-        self.load('term_exclame', 'icons', 'term_exclamation.png')
-        self.load('term_ask', 'icons', 'term_question.png')
-
-        self.load('item_armour', 'icons', 'i0_armour.png')
-        self.load('item_rifle_t', 'icons', 'i1_rifle_t.png')
-        self.load('item_rifle_ct', 'icons', 'i1_rifle_ct.png')
-        self.load('item_smg_t', 'icons', 'i1_smg_t.png')
-        self.load('item_smg_ct', 'icons', 'i1_smg_ct.png')
-        self.load('item_shotgun_t', 'icons', 'i1_shotgun_t.png')
-        self.load('item_shotgun_ct', 'icons', 'i1_shotgun_ct.png')
-        self.load('item_sniper', 'icons', 'i1_sniper.png')
-        self.load('item_pistol_t', 'icons', 'i2_pistol_t.png')
-        self.load('item_pistol_ct', 'icons', 'i2_pistol_ct.png')
-        self.load('item_knife', 'icons', 'i3_knife.png')
-        self.load('item_dkit', 'icons', 'i4_dkit.png')
-        self.load('item_c4', 'icons', 'i4_c4.png')
-        self.load('item_flash', 'icons', 'i5_flash.png')
-        self.load('item_explosive', 'icons', 'i5_explosive.png')
-        self.load('item_incendiary_t', 'icons', 'i5_incendiary_t.png')
-        self.load('item_incendiary_ct', 'icons', 'i5_incendiary_ct.png')
-        self.load('item_smoke', 'icons', 'i5_smoke.png')
+        self.load_sheet(slice_map, 'icons.png')
 
         # Remap for convenience
         self.id_icons: dict[str, np.ndarray] = {}
@@ -183,14 +141,12 @@ class ImageBank(dict):
                 self.id_icons[int_id] = arr
 
         # Team and angle specific sprites
+        self.load_sheet(slice_map, 'sprites.png')
         self.sprites: dict[tuple[int, int], np.ndarray] = {}
 
-        for i in range(16):
-            self.sprites[(GameID.GROUP_TEAM_T, i)] = self.load(f'sprite_t_{i}', 'sprites', f't_{i}.png')
-            self.sprites[(GameID.GROUP_TEAM_CT, i)] = self.load(f'sprite_ct_{i}', 'sprites', f'ct_{i}.png')
-
-        self.sprites[(GameID.GROUP_TEAM_T, -1)] = self.load('sprite_t_-1', 'sprites', 't_dead.png')
-        self.sprites[(GameID.GROUP_TEAM_CT, -1)] = self.load('sprite_ct_-1', 'sprites', 'ct_dead.png')
+        for i in range(-1, 16):
+            self.sprites[(GameID.GROUP_TEAM_T, i)] = self[f't_{i}']
+            self.sprites[(GameID.GROUP_TEAM_CT, i)] = self[f'ct_{i}']
 
         # Associate colours with player position ids
         for key, val in self.COLOURS.items():
@@ -225,6 +181,27 @@ class ImageBank(dict):
         self[name] = img
 
         return img
+
+    def load_sheet(
+        self,
+        slice_map: dict[str, dict[str, tuple[int, int, int, int]]],
+        filename: str,
+        mode: int = cv2.IMREAD_UNCHANGED
+    ) -> dict[str, np.ndarray]:
+
+        groupname = '.'.join(filename.split('.')[:-1])
+
+        sheet = cv2.imread(os.path.join(ASSET_DIR, 'sheets', filename), flags=mode)
+
+        sliced_sheet = {name: sheet[i:i+h, j:j+w] for name, (i, j, h, w) in slice_map[groupname].items()}
+
+        for name, img in sliced_sheet.items():
+            if name in self:
+                raise KeyError(f'Image associated with "{name}" already in image bank.')
+
+            self[name] = img
+
+        return sliced_sheet
 
 
 class SoundBank(SoundBankBase):
