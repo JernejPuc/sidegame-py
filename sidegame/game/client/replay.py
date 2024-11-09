@@ -4,8 +4,8 @@ from collections import deque
 import os
 import ctypes
 import struct
-import random
 from argparse import Namespace
+from random import Random
 from typing import Callable, Deque, Iterable, Tuple, Union
 from threading import Lock
 
@@ -60,7 +60,7 @@ class SDGReplayClient(ReplayClient):
         vsync: bool = True
     ):
         self.rng = np.random.default_rng(args.seed)
-        random.seed(args.seed)
+        self.rng_py = Random(args.seed)
 
         # Set original tick rate
         args.tick_rate = float(args.recording_path.split('/')[-1].split('_')[-2].split('-')[-1])
@@ -327,7 +327,7 @@ class SDGReplayClient(ReplayClient):
         self.sim.map.reset()
 
         self.rng = np.random.default_rng(self.init_args.seed)
-        random.seed(self.init_args.seed)
+        self.rng_py.seed(self.init_args.seed)
 
         self.session = Session(map=self.session.map, rng=self.rng)
         assets = (self.sim.images, self.sim.sounds, self.sim.inventory)

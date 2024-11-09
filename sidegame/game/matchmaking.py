@@ -1,10 +1,10 @@
 """SDG matchmaking"""
 
 import struct
-import random
 from argparse import Namespace
 from collections import deque
 from itertools import combinations
+from random import Random
 from typing import Dict, Iterable, Tuple
 
 from sidegame.networking.matchmaking import Client, Matchmaker
@@ -83,7 +83,7 @@ class SDGMatchmaker(Matchmaker):
         self.expand_mmr_diff_limit = expand_mmr_diff_limit
 
         # NOTE: Seeding random number generators is diminished by network and OS unpredictability
-        random.seed(seed)
+        self.rng_py = Random(seed)
 
     def create_waiting_client(self, client_address: Tuple[str, int], timestamp: float) -> Client:
         return SDGClient(timestamp, client_address)
@@ -158,7 +158,7 @@ class SDGMatchmaker(Matchmaker):
                 best_combos.append((team_1, team_2))
 
         # Note that options XY and YX share their score and either can be chosen
-        team_1, team_2 = random.choice(best_combos)
+        team_1, team_2 = self.rng_py.choice(best_combos)
 
         # Check max intra-team differences (assume positive MMR)
         # This way, the reception may wait to allow more ideal matchings to turn up

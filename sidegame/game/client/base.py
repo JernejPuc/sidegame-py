@@ -2,7 +2,7 @@
 
 from argparse import Namespace
 import struct
-import random
+from random import Random
 from typing import Iterable, List, Tuple, Union
 
 from numpy import ndarray
@@ -36,6 +36,7 @@ class SDGLiveClientBase(LiveClient):
         self.role_key: str = '0x' + args.role_key
         self.session_address = args.address
         self.rng = default_rng(args.seed)
+        self.rng_py = Random(args.seed)
         self.time_scale = args.time_scale
 
         super().__init__(
@@ -56,7 +57,6 @@ class SDGLiveClientBase(LiveClient):
         self.session = Session(rng=self.rng)
         self.sim = Simulation(self.own_entity_id, args.tick_rate, args.audio_device, self.session)
         self.stats = StatTracker(self.session, self.own_entity) if args.track_stats else None
-        random.seed(args.seed)
 
     def create_entity(self, entity_id: int) -> Entity:
         """
@@ -502,17 +502,17 @@ class SDGLiveClientBase(LiveClient):
                 terrain_key = int(session.map.sound[pos_y, pos_x])
 
                 # Terrain sound
-                sound = random.choice(sim.footsteps[terrain_key])
+                sound = self.rng_py.choice(sim.footsteps[terrain_key])
                 queue_sound(sound, observed_player, player)
 
                 # Movement sound
-                sound = random.choice(sim.movements)
+                sound = self.rng_py.choice(sim.movements)
                 queue_sound(sound, observed_player, player)
 
             elif event_id == EventID.FX_C4_KEY_PRESS and accept_experienced_fx:
                 planter_id = int(event_data[0])
 
-                sound = random.choice(sim.keypresses)
+                sound = self.rng_py.choice(sim.keypresses)
                 queue_sound(sound, observed_player, session.players[planter_id])
 
             elif event_id == EventID.FX_C4_INIT and accept_experienced_fx:
