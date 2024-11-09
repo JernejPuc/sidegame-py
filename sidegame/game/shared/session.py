@@ -21,8 +21,8 @@ class Session:
     https://www.gamersrdy.com/counter-strike-global-offensive/global-offensive-how-does-a-competitive-match-work/
     """
 
-    ROUNDS_TO_SWITCH = 8
-    ROUNDS_TO_WIN = 9
+    ROUNDS_TO_SWITCH = 4
+    ROUNDS_TO_WIN = 5
 
     TIME_TO_BUY = 20.
     TIME_TO_PLANT = 115.
