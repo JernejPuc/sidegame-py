@@ -86,7 +86,7 @@ class Simulation:
         else:
             self.images, self.sounds, self.inventory = assets
 
-        self.audio_system = DummyAudioSystem() if audio_device == -1 else AudioSystem(
+        self.audio_system = DummyAudioSystem(step_freq=tick_rate) if audio_device == -1 else AudioSystem(
             step_freq=tick_rate,
             max_distance=self.AUDIO_MAX_DISTANCE,
             distance_scaling=self.AUDIO_DISTANCE_SCALING,

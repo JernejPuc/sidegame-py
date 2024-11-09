@@ -153,8 +153,24 @@ class DummyAudioSystem:
     by duplicating sounds.
     """
 
-    def __init__(self, *args, max_n_sounds: int = 32, **kwargs):
-        self._audio_channels: List[Deque[OrientedSound]] = [deque() for _ in range(max_n_sounds)]
+    SAMPLING_RATE = 44100
+    _N_CHANNELS = 2
+
+    class DummyBuffer:
+        def __init__(self, null_chunk: np.ndarray):
+            self._null_chunk = null_chunk
+
+        def popleft(self) -> np.ndarray:
+            return self._null_chunk
+
+    def __init__(self, *args, step_freq: int = 30, max_n_sounds: int = 32, **kwargs):
+        self._chunk_size = int(self.SAMPLING_RATE // step_freq)
+        self._null_chunk = np.zeros((self._N_CHANNELS, self._chunk_size + 510))
+
+        entity = OrientedEntity()
+        self._audio_channels = [deque(OrientedSound(self._null_chunk, entity, entity)) for _ in range(max_n_sounds)]
+
+        self.external_buffer = self.DummyBuffer(self._null_chunk)
 
     def start(self):
         pass
