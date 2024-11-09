@@ -1,10 +1,11 @@
 """Basic building blocks of PCNet components."""
 
 from typing import Hashable, Iterable, Tuple, Union
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.multiprocessing import Manager
+
 from sdgai.utils import StateStore, init_std, silog
 
 
@@ -411,8 +412,7 @@ class IRCell(nn.Module):
         op2: Union[nn.Linear, nn.Conv1d, nn.Conv2d],
         u1: nn.Parameter,
         u2: nn.Parameter,
-        hidden_dim: Union[int, Tuple[int]],
-        manager: Manager = None
+        hidden_dim: Union[int, Tuple[int]]
     ):
         super().__init__()
 
@@ -422,8 +422,8 @@ class IRCell(nn.Module):
         self.u1 = u1
         self.u2 = u2
 
-        self.store_1 = StateStore(hidden_dim, manager=manager)
-        self.store_2 = StateStore(hidden_dim, manager=manager)
+        self.store_1 = StateStore(hidden_dim)
+        self.store_2 = StateStore(hidden_dim)
 
     def clear(self, keys: Iterable[Hashable] = None):
         """Clear final (first) hidden states of both recurrent layers."""
@@ -465,7 +465,7 @@ class IRLinearCell(IRCell):
     with linear processing of inputs and custom (log-like) activation.
     """
 
-    def __init__(self, input_size: int, hidden_size: int, manager: Manager = None):
+    def __init__(self, input_size: int, hidden_size: int):
         fc1 = nn.Linear(input_size, hidden_size, bias=True)
         fc2 = nn.Linear(hidden_size, hidden_size, bias=True)
         u1 = nn.Parameter(torch.empty(1, hidden_size))
@@ -478,7 +478,7 @@ class IRLinearCell(IRCell):
         nn.init.uniform_(u1, a=0., b=1.)
         nn.init.uniform_(u2, a=0., b=1.)
 
-        super().__init__(fc1, fc2, u1, u2, hidden_size, manager=manager)
+        super().__init__(fc1, fc2, u1, u2, hidden_size)
 
 
 class IRConv2dCell(IRCell):
@@ -499,8 +499,7 @@ class IRConv2dCell(IRCell):
         kernel_size: int,
         height: int,
         width: int,
-        padding_mode: str = 'zeros',
-        manager: Manager = None
+        padding_mode: str = 'zeros'
     ):
         conv_1 = nn.Conv2d(
             input_size,
@@ -528,7 +527,7 @@ class IRConv2dCell(IRCell):
         nn.init.constant_(u1, 0.5)
         nn.init.constant_(u2, 0.5)
 
-        super().__init__(conv_1, conv_2, u1, u2, (hidden_size, height, width), manager=manager)
+        super().__init__(conv_1, conv_2, u1, u2, (hidden_size, height, width))
 
 
 class IRConv1dCell(IRCell):
@@ -548,8 +547,7 @@ class IRConv1dCell(IRCell):
         hidden_size: int,
         kernel_size: int,
         width: int,
-        padding_mode: str = 'zeros',
-        manager: Manager = None
+        padding_mode: str = 'zeros'
     ):
         conv_1 = nn.Conv1d(
             input_size,
@@ -577,4 +575,4 @@ class IRConv1dCell(IRCell):
         nn.init.constant_(u1, 0.5)
         nn.init.constant_(u2, 0.5)
 
-        super().__init__(conv_1, conv_2, u1, u2, (hidden_size, width), manager=manager)
+        super().__init__(conv_1, conv_2, u1, u2, (hidden_size, width))

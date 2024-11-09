@@ -1,11 +1,12 @@
 """Components and assembly of PCNet"""
 
 from typing import Hashable, Iterable, Tuple, Union
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.multiprocessing import Manager
-from sdgai.utils import ChainLock, get_n_params, batch_crop, init_std, symlog
+
+from sdgai.utils import get_n_params, batch_crop, init_std, symlog
 from sdgai.layers import GDWPool1d, FMBConv, BResBlock, PosConv, SASAtten, FiLMAtten, \
     IRLinearCell, IRConv2dCell, IRConv1dCell
 
@@ -158,7 +159,7 @@ class AudioEncoding(nn.Module):
     ENC_SIZE = 128
     N_BLOCKS = 3
 
-    def __init__(self, manager: Manager = None):
+    def __init__(self):
         super().__init__()
 
         self.blocks = nn.Sequential(
@@ -171,7 +172,7 @@ class AudioEncoding(nn.Module):
             # 16x32 -> 16x48
             FMBConv(32, 48, 5, padding=2, n_blocks=self.N_BLOCKS, dim=1))
 
-        self.conv_mem_cell = IRConv1dCell(48, 48, 5, self.WIDTH//4, manager=manager)
+        self.conv_mem_cell = IRConv1dCell(48, 48, 5, self.WIDTH//4)
 
         # 16x48 -> 1xO
         self.pool = GDWPool1d(48, self.ENC_SIZE, self.WIDTH//4)
@@ -210,7 +211,7 @@ class SpatioTemporalCentre(nn.Module):
     ENC_SIZE = 320
     KERNEL_SIZE = 3
 
-    def __init__(self, input_state_size: int, manager: Manager = None):
+    def __init__(self, input_state_size: int):
         super().__init__()
 
         self.silu = nn.SiLU()
@@ -221,7 +222,7 @@ class SpatioTemporalCentre(nn.Module):
         self.attention = FiLMAtten(self.INPUT_SIZE, self.HEIGHT, self.WIDTH, n_heads=4)
 
         self.conv_mem_cell = IRConv2dCell(
-            self.INPUT_SIZE*2, self.HIDDEN_SIZE, self.KERNEL_SIZE, self.HEIGHT, self.WIDTH, manager=manager)
+            self.INPUT_SIZE*2, self.HIDDEN_SIZE, self.KERNEL_SIZE, self.HEIGHT, self.WIDTH)
 
         # 32x18x96 -> 1x1x320
         self.pool_enc = nn.Sequential(
@@ -390,8 +391,11 @@ class PCNet(nn.Module):
     MAX_FOCAL_OFFSET = float(max(PrimaryVisualEncoding.HEIGHT, PrimaryVisualEncoding.WIDTH))
     MKBD_ENC_SIZE = 22
 
-    def __init__(self, manager: Manager = None, critic: bool = False):
+    def __init__(self, critic: bool = False):
         super().__init__()
+
+        if critic:
+            raise NotImplementedError
 
         encoded_state_size = sum((
             PrimaryVisualEncoding.ENC_SIZE, FocusedVisualEncoding.ENC_SIZE, AudioEncoding.ENC_SIZE, self.MKBD_ENC_SIZE))
@@ -400,11 +404,11 @@ class PCNet(nn.Module):
         # Cognitive centres
         self.primary_visual_centre = PrimaryVisualEncoding()
         self.focused_visual_centre = FocusedVisualEncoding()
-        self.audio_centre = AudioEncoding(manager=manager)
+        self.audio_centre = AudioEncoding()
 
-        self.temporal_centre = IRLinearCell(encoded_state_size, self.INPUT_MEM_SIZE, manager=manager)
-        self.spatio_temporal_centre = SpatioTemporalCentre(self.INPUT_MEM_SIZE, manager=manager)
-        self.intent_centre = IRLinearCell(attended_state_size, self.INTENT_MEM_SIZE, manager=manager)
+        self.temporal_centre = IRLinearCell(encoded_state_size, self.INPUT_MEM_SIZE)
+        self.spatio_temporal_centre = SpatioTemporalCentre(self.INPUT_MEM_SIZE)
+        self.intent_centre = IRLinearCell(attended_state_size, self.INTENT_MEM_SIZE)
         self.motor_decoding = MotorCentre(self.INTENT_MEM_SIZE)
 
         # Mouse/key input adjustments
@@ -418,13 +422,15 @@ class PCNet(nn.Module):
         else:
             self.critic = None
 
-        # Locks for multi-threaded inference
-        self.lock_1 = ChainLock(self.N_WORKERS, manager=manager)
-        self.lock_2 = ChainLock(self.N_WORKERS, manager=manager)
-        self.lock_3 = ChainLock(self.N_WORKERS, manager=manager)
-        self.lock_4 = ChainLock(self.N_WORKERS, manager=manager)
-        self.lock_5 = ChainLock(self.N_WORKERS, manager=manager)
-        self.lock_6 = ChainLock(self.N_WORKERS, manager=manager)
+        self.stores = [
+            self.audio_centre.conv_mem_cell.store_1,
+            self.audio_centre.conv_mem_cell.store_2,
+            self.temporal_centre.store_1,
+            self.temporal_centre.store_2,
+            self.spatio_temporal_centre.conv_mem_cell.store_1,
+            self.spatio_temporal_centre.conv_mem_cell.store_2,
+            self.intent_centre.store_1,
+            self.intent_centre.store_2]
 
     def get_n_params(self, trainable: bool = True) -> int:
         """Get the number of (trainable) parameters in the instantiated model."""
@@ -483,51 +489,38 @@ class PCNet(nn.Module):
     ) -> Tuple[torch.Tensor]:
 
         # Primary visual encoding
-        with self.lock_1:
-            x_visual_deep, x_visual_enc = self.primary_visual_centre(x_visual)
+        x_visual_deep, x_visual_enc = self.primary_visual_centre(x_visual)
 
         # Focused visual encoding
-        with self.lock_2:
-            x_focused_enc = self.focused_visual_centre(x_visual, x_visual_deep, focal_points)
+        x_focused_enc = self.focused_visual_centre(x_visual, x_visual_deep, focal_points)
 
         # Audio encoding and mkbd normalisation
-        with self.lock_3:
-            x_audio = self.audio_centre(x_audio, actor_keys)
+        x_audio = self.audio_centre(x_audio, actor_keys)
 
-            if detach:
-                self.audio_centre.conv_mem_cell.detach(keys=actor_keys)
-
-            x_mkbd = torch.hstack((x_mkbd, focal_points / self.MAX_FOCAL_OFFSET))
-            x_mkbd = x_mkbd * self.mkbd_scale + self.mkbd_bias
+        x_mkbd = torch.hstack((x_mkbd, focal_points / self.MAX_FOCAL_OFFSET))
+        x_mkbd = x_mkbd * self.mkbd_scale + self.mkbd_bias
 
         # Temporal contextualisation
-        with self.lock_4:
-            x_state = torch.hstack((x_visual_enc, x_focused_enc, x_audio, x_mkbd))
-            x_state = self.temporal_centre(x_state, actor_keys)
-
-            if detach:
-                self.temporal_centre.detach(keys=actor_keys)
+        x_state = torch.hstack((x_visual_enc, x_focused_enc, x_audio, x_mkbd))
+        x_state = self.temporal_centre(x_state, actor_keys)
 
         # Spatio-temporal contextualisation
-        with self.lock_5:
-            x_visual, x_visual_enc = self.spatio_temporal_centre(x_visual_deep, x_state, actor_keys)
-
-            if detach:
-                self.spatio_temporal_centre.conv_mem_cell.detach(keys=actor_keys)
+        x_visual, x_visual_enc = self.spatio_temporal_centre(x_visual_deep, x_state, actor_keys)
 
         # Action inference and motor decoding
-        with self.lock_6:
-            x_state = torch.hstack((x_visual_enc, x_state))
-            x_state = self.intent_centre(x_state, actor_keys)
+        x_state = torch.hstack((x_visual_enc, x_state))
+        x_state = self.intent_centre(x_state, actor_keys)
 
-            if detach:
-                self.intent_centre.detach(keys=actor_keys)
-
-            x_focus, x_action = self.motor_decoding(x_visual, x_state)
+        x_focus, x_action = self.motor_decoding(x_visual, x_state)
 
         # States can be used for a critic/advantage estimator head in RL, but not needed for inference
         if self.critic is not None:
             state_values = self.critic(x_state)
             return x_focus, x_action, state_values
+
+        # Clear state buffers in eval. mode
+        if detach:
+            for store in self.stores:
+                store.batches = store.batches[-1:]
 
         return x_focus, x_action

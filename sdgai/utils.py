@@ -2,52 +2,15 @@
 
 from collections import deque
 from typing import Deque, Dict, Hashable, Iterable, List, Tuple, Union
+
 import numpy as np
 import h5py
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.multiprocessing import Lock, Manager
 
 
 DIVLOGPI = 1./np.log(np.pi)
-
-
-class ChainLock:
-    """
-    A lock with a buffer to ensure execution of waiting threads in FIFO order.
-    This is done by making the entrant thread focus only on the lock of its
-    predecessor, instead of a lock that is universally shared.
-
-    NOTE: By specifying `n_workers` and drawing from a pre-initialised pool of
-    locks, the chain can be viewed as 'finite', consisting of the same links
-    (i.e. locks) that repeat periodically. If they were initialised on the fly,
-    each link would be new and unique, and the chain 'infinite'.
-    """
-
-    def __init__(self, n_workers: int, manager: Manager = None):
-        self._locks = [Lock() if manager is None else manager.Lock() for _ in range(n_workers)]
-        self._free_lock_ids = list(range(n_workers)) if manager is None else manager.list(list(range(n_workers)))
-        self._active_lock_ids = [] if manager is None else manager.list()
-
-    def __enter__(self):
-        own_lock_id = self._free_lock_ids.pop(0)
-        own_lock = self._locks[own_lock_id]
-        own_lock.acquire()
-
-        self._active_lock_ids.append(own_lock_id)
-
-        # Wait for predecessor to finish
-        if len(self._active_lock_ids) > 1:
-            with self._locks[self._active_lock_ids[-2]]:
-                pass
-
-    def __exit__(self, *_exc_args):
-        own_lock_id = self._active_lock_ids.pop(0)
-        own_lock = self._locks[own_lock_id]
-        own_lock.release()
-
-        self._free_lock_ids.append(own_lock_id)
 
 
 class StateStore:
@@ -56,9 +19,9 @@ class StateStore:
     (intended for distributed inference and EBPTT).
     """
 
-    def __init__(self, dim: Union[int, Tuple[int]], manager: Manager = None):
-        self.batches: List[torch.Tensor] = [] if manager is None else manager.list()
-        self.states: Dict[Hashable, torch.Tensor] = {} if manager is None else manager.dict()
+    def __init__(self, dim: Union[int, Tuple[int]]):
+        self.batches: List[torch.Tensor] = []
+        self.states: Dict[Hashable, torch.Tensor] = {}
         self.default = torch.zeros(dim)
 
     def move(self, device: Union[str, torch.device]):
@@ -72,12 +35,7 @@ class StateStore:
         for key in self.states.keys():
             self.states[key] = self.states[key].to(device=device)
 
-        try:
-            self.batches.clear()
-
-        except AttributeError:
-            for _ in range(len(self.batches)):
-                del self.batches[0]
+        self.batches.clear()
 
     def clear(self, keys: Iterable[Hashable] = None):
         """
@@ -136,12 +94,7 @@ class StateStore:
         # Break computational graph at final batch
         final_batch = self.batches[-1].detach()
 
-        try:
-            self.batches.clear()
-
-        except AttributeError:
-            for _ in range(len(self.batches)):
-                del self.batches[0]
+        self.batches.clear()
 
         # Update states with views of the final batch
         for key, state in zip(keys, final_batch):
