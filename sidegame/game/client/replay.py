@@ -267,7 +267,11 @@ class SDGReplayClient(ReplayClient):
             if not self.session.is_spectator(self.sim.own_player_id):
                 # If dead, follow the originally observed player
                 if self.session.is_dead_player(self.sim.own_player_id) and view != GameID.VIEW_LOBBY:
-                    if self.sim.view == GameID.VIEW_WORLD and hovered_entity_id != MapID.PLAYER_ID_NULL:
+                    if (
+                        self.sim.view == GameID.VIEW_WORLD and
+                        hovered_entity_id != MapID.PLAYER_ID_NULL and
+                        not self.sim.observer_lock_time
+                    ):
                         self.sim.observed_player_id = hovered_entity_id
 
                 # When returning to life, switch back to own player
