@@ -1,6 +1,5 @@
 import json
 import os
-from enum import IntEnum
 
 import numpy as np
 import cv2
@@ -193,7 +192,7 @@ class ImageBank(dict):
 
         sheet = cv2.imread(os.path.join(ASSET_DIR, 'sheets', filename), flags=mode)
 
-        sliced_sheet = {name: sheet[i:i+h, j:j+w] for name, (i, j, h, w) in slice_map[groupname].items()}
+        sliced_sheet = {name: sheet[i:i+h, j:j+w].copy() for name, (i, j, h, w) in slice_map[groupname].items()}
 
         for name, img in sliced_sheet.items():
             if name in self:
