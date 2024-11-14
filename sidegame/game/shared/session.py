@@ -31,8 +31,8 @@ class Session:
 
     C4_EVENT_TYPES: tuple[int, int, int] = (EventID.C4_PLANTED, EventID.C4_DETONATED, EventID.C4_DEFUSED)
 
-    def __init__(self, map_: Map = None, rng: np.random.Generator = None):
-        self.map = Map() if map_ is None else map_
+    def __init__(self, map: Map = None, rng: np.random.Generator = None):
+        self.map = Map() if map is None else map
         self.rng = np.random.default_rng() if rng is None else rng
 
         # Init groups and subgroups
@@ -65,7 +65,7 @@ class Session:
         # Track C4 instance
         self.c4: C4 | None = None
 
-    def update(self, dt: float, events: list[Event], flag: int = GameID.NULL):
+    def update(self, dt: float, events: list[Event], flag: int = GameID.NULL, event_idx: int = 0) -> int:
         """
         Evaluate match-affecting events and advance the match,
         checking for and relaying any further changes in match state.
@@ -82,12 +82,11 @@ class Session:
                 obj.update(dt, self.map, all_players, events)
 
             # Iter and extend events
-            idx = 0
             c4_event = None
             any_deaths = False
 
-            while idx < len(events):
-                event = events[idx]
+            while event_idx < len(events):
+                event = events[event_idx]
                 event_type = event.type
 
                 # Add newly spawned object to tracked objects
@@ -124,7 +123,7 @@ class Session:
                     self.handle_player_death(event)
                     any_deaths = True
 
-                idx += 1
+                event_idx += 1
 
             # Check time-based phase change conditions
             self.eval_time(dt, events, c4_event)
@@ -135,6 +134,8 @@ class Session:
 
         if self.phase and flag == GameID.CMD_END_MATCH:
             events.append(self.stop_match())
+
+        return event_idx
 
     def start_match(self, assign_c4: bool = True) -> list[Event]:
         """Initialise the match on a specific map."""

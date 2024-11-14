@@ -564,11 +564,12 @@ class StatTracker:
         https://flashed.gg/posts/reverse-engineering-hltv-rating/
         """
 
-        own_player = self.own_player
         tracked_scores = self.tracked_scores
 
-        finished_rounds = self.session.rounds_won_t + self.session.rounds_won_ct - \
+        finished_rounds = tracked_scores['t_rounds'] + tracked_scores['ct_rounds'] - \
             (1 if self.session.phase == GameID.PHASE_RESET else 0)
+
+        won_rounds = tracked_scores['t_rounds_won'] + tracked_scores['ct_rounds_won']
 
         # Using lowest possible (-7) round fraction instead of 1 to soften the drop in stats into the next round
         soft_played_rounds = max(1., finished_rounds + self.session.total_round_time / 180.)
@@ -576,16 +577,16 @@ class StatTracker:
         played_rounds = soft_played_rounds if soft else hard_played_rounds
 
         # Basic stats
-        kpr = own_player.kills / played_rounds
+        kpr = tracked_scores['kills'] / played_rounds
         apr = tracked_scores['assists'] / played_rounds
-        dpr = own_player.deaths / played_rounds
+        dpr = tracked_scores['deaths'] / played_rounds
         adr = tracked_scores['damage'] / played_rounds
 
         # Approx. impact and rating 2, KAST, RWS
         impact = 2.14*kpr + 0.42*apr - 0.41
         kast = tracked_scores['kast_rounds'] / played_rounds
         rating2 = 0.0073*kast + 0.3591*kpr - 0.5329*dpr + 0.2372*impact + 0.0032*adr + 0.1587
-        rws = tracked_scores['round_win_shares'] / max(1, finished_rounds)
+        rws = tracked_scores['round_win_shares'] / max(1, won_rounds)
 
         # Utility stats
         util_damage = sum(self.tracked_item_damage[key] for key in (
@@ -600,11 +601,11 @@ class StatTracker:
         util_throws_per_round = util_use / played_rounds
 
         return [
-            ('kills', own_player.kills),
-            ('deaths', own_player.deaths),
+            ('kills', tracked_scores['kills']),
+            ('deaths', tracked_scores['deaths']),
             ('assists', tracked_scores['assists']),
-            ('kill_death_ratio', own_player.kills / max(1., own_player.deaths)),
-            ('kdassist_ratio', (own_player.kills + tracked_scores['assists']) / max(1., own_player.deaths)),
+            ('kill_death_ratio', tracked_scores['kills'] / max(1., tracked_scores['deaths'])),
+            ('kdassist_ratio', (tracked_scores['kills']+tracked_scores['assists']) / max(1., tracked_scores['deaths'])),
             ('kills_per_round', kpr),
             ('deaths_per_round', dpr),
             ('assists_per_round', apr),
@@ -613,8 +614,8 @@ class StatTracker:
             ('average_multikills', tracked_scores['multikills'] / max(1, tracked_scores['multikill_rounds'])),
             ('util_dmg_per_throw', util_damage_per_throw),
             ('util_throws_per_round', util_throws_per_round),
-            ('money_spent_per_kill', max(1., tracked_scores['money_spent'] / max(1, own_player.kills))),
-            ('distance_per_kill', tracked_scores['distance'] / max(1., own_player.kills)),
+            ('money_spent_per_kill', max(1., tracked_scores['money_spent'] / max(1, tracked_scores['kills']))),
+            ('distance_per_kill', tracked_scores['distance'] / max(1., tracked_scores['kills'])),
             ('average_speed', tracked_scores['distance'] / max(1., tracked_scores['game_time'])),
             ('noise_steps_per_round', tracked_scores['footsteps'] / played_rounds),
             ('health_at_round_end', tracked_scores['remaining_health'] / max(1, finished_rounds)),
@@ -657,7 +658,7 @@ class FocusTracker:
         if self.mode == self.MODE_READ:
             self.recorder.read()
 
-        self.icon_inactive = self._load_image('icons', 'pointer_cursor.png')
+        self.icon_inactive = self._load_cursor_image()
         self.icon_active = self.icon_inactive.copy()
         self.icon_inactive[..., :3] = ImageBank.COLOURS['t_cyan']
         self.icon_active[..., :3] = ImageBank.COLOURS['t_red']
@@ -666,10 +667,16 @@ class FocusTracker:
         self.active = False if path is None else start_active
         self.hidden = True
 
-    def _load_image(*image_path: Union[str, Tuple[str]], mono: bool = False) -> np.ndarray:
+    @staticmethod
+    def _load_cursor_image() -> np.ndarray:
         """Wrapper around `cv2.imread` to minimise path specification."""
-        return cv2.imread(
-            os.path.join(ASSET_DIR, *image_path), flags=cv2.IMREAD_GRAYSCALE if mono else cv2.IMREAD_UNCHANGED)
+
+        with open(os.path.join(ASSET_DIR, 'sheets', 'slices.json'), 'r') as f:
+            i, j, h, w = json.load(f)['icons']['pointer_cursor']
+
+        icon_sheet = cv2.imread(os.path.join(ASSET_DIR, 'sheets', 'icons.png'), flags=cv2.IMREAD_UNCHANGED)
+
+        return icon_sheet[i:i+h, j:j+w].copy()
 
     def update(self, yrel: float, xrel: float):
         """Update focal coordinates according to relative movement."""

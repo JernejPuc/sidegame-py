@@ -137,7 +137,7 @@ class SDGLiveClientBase(LiveClient):
             # and processed at discrete intervals, which don't necessarily match up nicely with specific use intervals,
             # so they will be suboptimally utilised, e.g. can't catch 0.15s use interval if tick is at 0.133s or 0.167s
 
-    def handle_log(self, event_entry: Entry, timestamp: float):
+    def handle_log(self, event_entry: Entry, timestamp: float, predicting_state: bool = True):
         sim = self.sim
         session = self.session
         inventory = sim.inventory
@@ -155,16 +155,19 @@ class SDGLiveClientBase(LiveClient):
         # Handle game (env.) event
         if event_entry.id == self.ENV_ID:
             if event_id == EventID.CTRL_MATCH_STARTED:
-                self.remove_object_entities()
-                session.start_match(assign_c4=False)
+                if predicting_state:
+                    self.remove_object_entities()
+                    session.start_match(assign_c4=False)
 
                 # NOTE: Spectators must enter manually (ESC), because it was a bit annoying when connecting mid-game
                 if session.is_player(sim.own_player_id):
                     sim.enter_world()
 
             elif event_id == EventID.CTRL_MATCH_ENDED:
-                _, _, session.rounds_won_t, session.rounds_won_ct = event_data[-5:-1]
-                session.stop_match()
+                if predicting_state:
+                    _, _, session.rounds_won_t, session.rounds_won_ct = event_data[-5:-1]
+                    session.stop_match()
+
                 sim.exit_world()
 
             elif event_id == EventID.CTRL_MATCH_PHASE_CHANGED:
@@ -177,8 +180,9 @@ class SDGLiveClientBase(LiveClient):
                     penalise_alive_ts = bool(event_data[1])
                     win_reward = int(event_data[2])
 
-                    session.change_phase(
-                        new_phase, t_win=t_win, win_reward=win_reward, penalise_alive_ts=penalise_alive_ts)
+                    if predicting_state:
+                        session.change_phase(
+                            new_phase, t_win=t_win, win_reward=win_reward, penalise_alive_ts=penalise_alive_ts)
 
                     # Announcer sound
                     if accept_announced_fx:
@@ -196,7 +200,6 @@ class SDGLiveClientBase(LiveClient):
 
                 # Reset side and/or round
                 elif old_phase == GameID.PHASE_RESET and new_phase == GameID.PHASE_BUY:
-                    self.remove_object_entities()
                     sim.clear_effects()
 
                     # Switch back to own player if viewing others when dead
@@ -204,7 +207,8 @@ class SDGLiveClientBase(LiveClient):
                         sim.observed_player_id = sim.own_player_id
 
                     if (session.rounds_won_t + session.rounds_won_ct) == session.ROUNDS_TO_SWITCH:
-                        session.reset_side(switch_sides=True)
+                        if predicting_state:
+                            session.reset_side(switch_sides=True)
 
                         # Announcer sound
                         if accept_announced_fx:
@@ -221,19 +225,22 @@ class SDGLiveClientBase(LiveClient):
                         words = [GameID.GROUP_TEAM_CT, GameID.TERM_MOVE, GameID.GROUP_TEAM_T, GameID.TERM_STOP]
                         sim.add_chat_entry(Message(sender_id, msg_round, msg_time, words))
 
-                    session.reset_round(assign_c4=False)
+                    if predicting_state:
+                        self.remove_object_entities()
+                        session.reset_round(assign_c4=False)
 
                     # Announcer sound
                     if accept_announced_fx:
                         queue_sound(sim.sounds['reset_round'], own_player, own_player)
 
                 # Sync current match state
-                session.loss_streak_t = int(event_data[3])
-                session.loss_streak_ct = int(event_data[4])
-                session.time = event_data[5]
-                session.phase = int(event_data[6])
-                session.rounds_won_t = event_data[-3]
-                session.rounds_won_ct = event_data[-2]
+                if predicting_state:
+                    session.loss_streak_t = int(event_data[3])
+                    session.loss_streak_ct = int(event_data[4])
+                    session.time = event_data[5]
+                    session.phase = int(event_data[6])
+                    session.rounds_won_t = event_data[-3]
+                    session.rounds_won_ct = event_data[-2]
 
             # Break client loop
             elif event_id == EventID.CTRL_SESSION_ENDED:
@@ -387,19 +394,23 @@ class SDGLiveClientBase(LiveClient):
                 spending = int(event_data[6])
 
                 player = session.players[obj_owner_id]
-                player.money = money
-                item = inventory.get_item_by_id(obj_item_id)
-                full_item_slot = item.slot + item.subslot
 
-                if player.slots[full_item_slot] is None and carrying:
-                    player.slots[full_item_slot] = \
-                        Weapon(item, player, rng=player.rng) if item.slot in Item.WEAPON_SLOTS else Object(item, player)
+                if predicting_state:
+                    player.money = money
+                    item = inventory.get_item_by_id(obj_item_id)
+                    full_item_slot = item.slot + item.subslot
 
-                elif not carrying and not spending:
-                    player.slots[full_item_slot] = None
+                    if player.slots[full_item_slot] is None and carrying:
+                        player.slots[full_item_slot] = (
+                            Weapon(item, player, rng=player.rng)
+                            if item.slot in Item.WEAPON_SLOTS
+                            else Object(item, player))
 
-                if player.slots[full_item_slot] is not None and carrying:
-                    player.slots[full_item_slot].set_values(durability, magazine, reserve, carrying)
+                    elif not carrying and not spending:
+                        player.slots[full_item_slot] = None
+
+                    if player.slots[full_item_slot] is not None and carrying:
+                        player.slots[full_item_slot].set_values(durability, magazine, reserve, carrying)
 
                 # SFX
                 if accept_experienced_fx:
@@ -427,13 +438,17 @@ class SDGLiveClientBase(LiveClient):
                 elif item_id == GameID.ITEM_SMOKE:
                     vfx = Fog((0, 0), source.item.radius, source.item.duration)
 
-                    source.set_zone_cover(session.map)
+                    if predicting_state:
+                        source.set_zone_cover(session.map)
+
                     vfx.world_indices = vfx.cover_indices = source.cover_indices
 
                 else:
                     vfx = Flame((0, 0), source.item.radius, source.item.duration)
 
-                    source.set_zone_cover(session.map)
+                    if predicting_state:
+                        source.set_zone_cover(session.map)
+
                     vfx.world_indices = vfx.cover_indices = source.cover_indices
 
                 sim.add_effect(vfx)
@@ -449,7 +464,9 @@ class SDGLiveClientBase(LiveClient):
                 planter_id = int(event_data[0])
 
                 planter: Player = session.players[planter_id]
-                planter.money += 300
+
+                if predicting_state:
+                    planter.money += 300
 
                 # Announcer sound
                 if accept_announced_fx:
@@ -471,8 +488,10 @@ class SDGLiveClientBase(LiveClient):
                 defuser_id = int(event_data[1])
 
                 defuser: Player = session.players[defuser_id]
-                defuser.money += 300
-                session.distribute_rewards(session.players_t.values(), [], 800)
+
+                if predicting_state:
+                    defuser.money += 300
+                    session.distribute_rewards(session.players_t.values(), [], 800)
 
                 # Announcer sound
                 if accept_announced_fx:
@@ -573,7 +592,7 @@ class SDGLiveClientBase(LiveClient):
                 item = inventory.get_item_by_id(item_id)
 
                 # NOTE: Own player wall hits are already predicted and grenade throw SFX is handled by drop (assign)
-                if attacker_id != sim.own_player_id and item.slot != Item.SLOT_UTILITY:
+                if (attacker_id != sim.own_player_id or not predicting_state) and item.slot != Item.SLOT_UTILITY:
                     source = session.players[attacker_id]
                     queue_sound(item.sounds['attack'], observed_player, source, override=True)
 
@@ -626,7 +645,7 @@ class SDGLiveClientBase(LiveClient):
                 item_id = int(event_data[-2])
 
                 # NOTE: Own player wall hits are already predicted
-                if attacker_id != sim.own_player_id:
+                if attacker_id != sim.own_player_id or not predicting_state:
                     sim.add_effect(Decal(pos_y, pos_x, lifetime=10.))
 
                     if item_id == GameID.ITEM_KNIFE:
@@ -638,7 +657,7 @@ class SDGLiveClientBase(LiveClient):
                 rld_item_id = event_data[-2]
 
                 # NOTE: Own reload events are already predicted
-                if reloader_id != sim.own_player_id and accept_experienced_fx:
+                if (reloader_id != sim.own_player_id or not predicting_state) and accept_experienced_fx:
                     if rld_event_type == Item.RLD_START:
                         sound_key = 'reload_start'
                     elif rld_event_type == Item.RLD_ADD:
@@ -663,8 +682,9 @@ class SDGLiveClientBase(LiveClient):
                 player = session.players[damaged_id]
 
                 # NOTE: Foreign entity recoil is interpolated instead
-                recoil = player.id == sim.own_player_id
-                player.eval_damage(dmg_event, session.map, check_death=True, recoil=recoil, players=session.players)
+                if predicting_state:
+                    recoil = player.id == sim.own_player_id
+                    player.eval_damage(dmg_event, session.map, check_death=True, recoil=recoil, players=session.players)
 
                 if accept_experienced_fx:
                     # Hit sound
@@ -688,8 +708,10 @@ class SDGLiveClientBase(LiveClient):
                 death_event = Event(event_id, (attacker_id, victim_id, item_id, excess))
 
                 player = session.players[victim_id]
-                player.eval_death(death_event, session.map)
-                session.handle_player_death(death_event)
+
+                if predicting_state:
+                    player.eval_death(death_event, session.map)
+                    session.handle_player_death(death_event)
 
                 # Death sound
                 if accept_experienced_fx or (victim_id == sim.observed_player_id and accept_announced_fx):

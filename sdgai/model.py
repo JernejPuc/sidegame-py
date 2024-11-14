@@ -415,13 +415,7 @@ class PCNet(nn.Module):
         self.mkbd_scale = nn.Parameter(torch.ones(1, self.MKBD_ENC_SIZE))
         self.mkbd_bias = nn.Parameter(torch.zeros(1, self.MKBD_ENC_SIZE))
 
-        # Advantage estimator
-        if critic:
-            self.critic = nn.Linear(self.INTENT_MEM_SIZE, 1)
-
-        else:
-            self.critic = None
-
+        # Exposed buffers for eval. mode
         self.stores = [
             self.audio_centre.conv_mem_cell.store_1,
             self.audio_centre.conv_mem_cell.store_2,
@@ -512,11 +506,6 @@ class PCNet(nn.Module):
         x_state = self.intent_centre(x_state, actor_keys)
 
         x_focus, x_action = self.motor_decoding(x_visual, x_state)
-
-        # States can be used for a critic/advantage estimator head in RL, but not needed for inference
-        if self.critic is not None:
-            state_values = self.critic(x_state)
-            return x_focus, x_action, state_values
 
         # Clear state buffers in eval. mode
         if detach:

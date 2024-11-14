@@ -64,6 +64,9 @@ class Map:
         self.spawn_origin_t = np.array((spawn_origin_t_x[0], spawn_origin_t_y[0]), dtype=np.float64)
         self.spawn_origin_ct = np.array((spawn_origin_ct_x[0], spawn_origin_ct_y[0]), dtype=np.float64)
 
+        self.site_a_centre = np.argwhere(self.landmark == MapID.LANDMARK_PLANT_A).mean(0)[::-1]
+        self.site_b_centre = np.argwhere(self.landmark == MapID.LANDMARK_PLANT_B).mean(0)[::-1]
+
     def reset(self):
         """Fill dynamic maps with null values."""
 
