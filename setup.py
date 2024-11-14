@@ -2,18 +2,23 @@ import os
 from setuptools import setup
 
 
-with open(os.path.join(os.path.dirname(__file__), 'README.md'), 'r') as readme_file:
-    readme = readme_file.read()
+dirname = os.path.dirname(__file__)
 
-with open(os.path.join(os.path.dirname(__file__), 'requirements.txt'), 'r') as req_file:
-    requirements = req_file.read().splitlines()
+with open(os.path.join(dirname, 'README.md'), 'r') as f:
+    readme = f.read()
 
-with open(os.path.join(os.path.dirname(__file__), 'requirements-ai.txt'), 'r') as req_file:
-    requirements_ai = req_file.read().splitlines()
+with open(os.path.join(dirname, 'requirements.txt'), 'r') as f:
+    requirements = f.read().splitlines()
+
+with open(os.path.join(dirname, 'requirements-ai.txt'), 'r') as f:
+    requirements_ai = f.read().splitlines()
+
+with open(os.path.join(dirname, 'requirements-rl.txt'), 'r') as f:
+    requirements_rl = f.read().splitlines()
 
 setup(
     name='sidegame',
-    version='0.2.0.dev1',
+    version='0.2.1',
     description='SiDeGame - Simplified Defusal Game',
     long_description=readme,
     long_description_content_type='text/markdown',
@@ -23,7 +28,7 @@ setup(
     license='MPL 2.0',
     classifiers=[
         'License :: OSI Approved :: Mozilla Public License 2.0 (MPL 2.0)',
-        'Development Status :: 3 - Alpha',
+        'Development Status :: 7 - Inactive',
         'Environment :: Console',
         'Intended Audience :: Education',
         'Intended Audience :: End Users/Desktop',
@@ -38,9 +43,9 @@ setup(
     platforms=['Windows', 'Linux'],
     packages=['sidegame', 'sdgai'],
     package_data={'sidegame': ['assets/*.png', 'assets/*.wav', 'assets/*.npy', 'assets/*.json']},
-    data_files=[('user_data', ['*.json'])],
+    data_files=[('user_data', ['*.json']), ('models', ['*.pth'])],
     python_requires='~=3.11',
     install_requires=requirements,
-    extras_require={'AI': requirements_ai},
+    extras_require={'AI': requirements_ai, 'RL': requirements_rl},
     zip_safe=False
 )

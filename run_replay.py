@@ -20,7 +20,6 @@ import numpy as np
 
 from sidegame.audio import interleave
 from sidegame.game.client import SDGReplayClient
-from sidegame.game.client.extraction import extract
 
 from run_client import parse_args
 
@@ -124,11 +123,13 @@ def parse_extraction_args() -> argparse.Namespace:
 if __name__ == '__main__':
     args = parse_args()
 
-    if args.mode == 'replay':
+    if args.mode in ('replay', 'client'):
         client = SDGReplayClient(args)
         sys.exit(client.run())
 
     elif args.mode == 'extract':
+        from sidegame.game.client.extraction import extract
+
         args = parse_extraction_args()
         extract(args)
 

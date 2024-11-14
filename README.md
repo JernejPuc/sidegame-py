@@ -6,7 +6,7 @@ consistent across human and AI interfaces.
 
 <p float="center">
   <img src="user_data/screenshot_000.png" width="49%" />
-  <img src="user_data/screenshot_001.png" width="49%" /> 
+  <img src="user_data/clip_000.gif" width="49%" alt="Highlight replay" /> 
 </p>
 
 <p float="center">
@@ -146,6 +146,7 @@ server and can be used freely.
 
 3. Admin commands:
     - `set team A B`: Move client with ID `A` to team (group) `B`.
+    - `set team N`: Move the first `N` clients into player teams.
     - `start`: Start the match.
     - `stop`: Stop the match.
     - `quit`: End the session, and both server and each connected client process along with it.
@@ -157,16 +158,23 @@ server and can be used freely.
     - `kick A`: Remove client with ID `A` from the remainder of the session.
 
 
-### AI actor interface (deprecated & undergoing revision)
+### AI actor interface
 
 Actor implementations can inherit from the `sidegame.game.client.base::SDGLiveClientBase`
 class and facilitate interaction with a pre-trained model, remote inference or
 optimisation servers, etc.
 
-Examples can be viewed in the form of `sdgai.actor::SDGSimpleActor` and
-`sdgai.actor::SDGRemoteActor`. They can be used with `models/pcnet-sl.pth`,
-a model trained with imitation learning via `run_supervised.py`,
-although highly overfitted and not very useful in practice.
+As an example, `sdgai.actor::SDGActorClient` can run multiple instances of `models/pcnet-sl.pth`,
+a model trained with imitation learning via `sdgai/run_supervised.py`.
+Note that its performance is limited due to overfitting on a small dataset.
+
+A reinforcement learning example replaces the clients and server with `sdgai.rl::SDGSyncEnv`,
+a lock-step version of the environment without real-time networking constraints.
+The implementation in `sdgai.rl` is based on [`discit`](https://github.com/jernejpuc/discit),
+but no trained model is available to be used at this time.
+
+The examples rely on additional `requirements-ai.txt` and `requirements-rl.txt`,
+respectively.
 
 
 ### Notes on performance
@@ -246,14 +254,16 @@ A much shorter [conference paper](https://plus.si.cobiss.net/opac7/bib/86401795)
  url={http://library.ijs.si/Stacks/Proceedings/InformationSociety/2021/IS2021_Volume_A.pdf}}
 ```
 
-After a new round of updates and reinforcement learning experiments is concluded,
-another paper will be forthcoming.
-
 
 ## Going forward
 
-Despite some time of inactivity, the prospect of revisiting SiDeGame remains.
-The following open issues are being addressed in 2023:
+After a longer period of inactivity, my priorities and obligations have changed
+to the point where no further experiments or papers are planned for SiDeGame.
+
+The prospect of revisiting it remains and any interest in it is welcome.
+Hopefully, the latest round of updates will leave it at an accessible point.
+
+The following points remain posted here as suggestions:
 
 
 #### Gameplay
@@ -264,26 +274,14 @@ The following open issues are being addressed in 2023:
 - Experiment with message wheel views to improve selection accuracy and speed.
 
 #### Supervised pretraining
-- Remove current imitation learning implementation and model.
+- Revise the current imitation learning implementation and model.
 - Add option to extract segmentation maps from every frame.
-- Revise the visual encoder part of the model.
 - Pretrain the visual encoder part of the model on frame-segmentation pairs.
 
-#### Environment
-- Implement a fused AI client-server that can run several match sessions
-  in lockstep (synchronous) mode.
-- Implement an AI client that can run inference for multiple agents at once
-  from a single process on the same device.
-
 #### Reinforcement learning
-- Revise the policy and valuator model architectures.
-- Revise the RL implementation for the lockstep setting and update the algorithm to PPG
-([`discit`](https://github.com/jernejpuc/discit)).
+- Revise the encoder, policy, and critic model architectures.
 - Add trained policy models for each stage of a curriculum of transferring agents
   from smaller to larger maps and team sizes.
-
-#### Presentation
-- Record demos of human and AI play and embed uploaded videos in the main `README`.
 
 
 ## Backlog
