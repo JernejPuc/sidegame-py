@@ -291,6 +291,13 @@ class Simulation:
         self.effects.clear()
         self.fx_ctr_map.fill(0)
 
+    def get_sound(self) -> ndarray:
+        """Get the soundwave corresponding to the last frame interval."""
+
+        self.audio_system.step()
+
+        return self.audio_system.external_buffer.popleft()
+
     def get_frame(self) -> ndarray:
         """Get the image corresponding to the current frame."""
 

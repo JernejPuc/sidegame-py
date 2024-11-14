@@ -1,22 +1,18 @@
 #!/usr/bin/env python
 
-"""Run SDG actor processes."""
+"""Run `SDGActorClient` with specified settings."""
 
 import os
+import sys
 import json
 import argparse
 from logging import DEBUG
-from time import sleep
-from typing import List
-import threading
 import torch
-import torch.multiprocessing as mp
-from sdgai.actor import SDGRemoteActor, SDGSimpleActor
-from sdgai.reinforcement import Inferent
+from sdgai.actor import SDGActorClient
 
 
-DATA_DIR = os.path.abspath(os.path.join('user_data'))
-MODEL_DIR = os.path.abspath(os.path.join('models'))
+DATA_DIR = os.path.abspath('user_data')
+MODEL_DIR = os.path.abspath('models')
 
 
 def parse_args() -> argparse.Namespace:
@@ -89,6 +85,9 @@ def parse_args() -> argparse.Namespace:
         '--volume', type=float, default=1.,
         help='Initial factor by which in-game sound amplitudes are scaled.')
     parser.add_argument(
+        '--audio_device', type=int, default=0,
+        help='Has no effect: Audio is converted into spectral vectors without passing through a dedicated device.')
+    parser.add_argument(
         '--interp_ratio', type=float, default=2.,
         help='Ratio between kept states for entity interpolation and the update rate of the server. '
         'Corresponds to the amount of artificial lag introduced to the client.')
@@ -97,7 +96,7 @@ def parse_args() -> argparse.Namespace:
         '--role_key', type=str, default='00000000',
         help='Role key used to introduce a client to the server. Used for authentication and to limit user privileges.')
     parser.add_argument(
-        '-i', '--name', '--player_id', type=str, default='ai00',
+        '-i', '--name', '--player_id', type=str, default='pcsl',
         help='4-character name used to introduce a client to the server. Used to distinguish between clients.')
     parser.add_argument(
         '-m', '--mmr', type=float, default=0.,
@@ -105,21 +104,19 @@ def parse_args() -> argparse.Namespace:
         'If 0, the address and port are assumed to belong to a session server, which will be contacted directly.')
 
     # Actor-specific args
-    parser.add_argument('--device', type=str, default='cpu', help='Target inference device.')
-    parser.add_argument('-n', '--n_actors', type=int, default=1, help='Number of agent copies to spawn.')
+    parser.add_argument('--device', type=str, default='cuda', help='Target inference device.')
+    parser.add_argument('-n', '--n_actors', type=int, default=10, help='Number of agent copies to spawn.')
     parser.add_argument(
         '-p', '--checkpoint_path', type=str, default=os.path.join(MODEL_DIR, 'pcnet-sl.pth'),
         help='Path to trained model.')
     parser.add_argument(
-        '--sampling_proba', '--sp', type=float, default=0.01,
+        '--sampling_prob', '--sp', type=float, default=0.03,
         help='Probability of sampling to get actions from probabilities instead of argmax. '
         '0 corresponds to argmax and 1 to sampling on every step.')
     parser.add_argument(
-        '--sampling_thr', '--st', type=float, default=0.1,
-        help='Determines the upper and lower probability thresholds between which actions can be sampled.')
-    parser.add_argument('--expose', action='store_true', help='Store intermediate tensors.')
-    parser.add_argument('--strict', action='store_true', help='Load model params strictly.')
-    parser.add_argument('--simple', action='store_true', help='Use local serial inference.')
+        '--action_skip', '--as', type=int, default=30,
+        help='Reduces held button update freq. with eval. skip to prevent overly repeated switching. '
+        '0 corresponds to no skipping, 1 to skipping every other step, and so on.')
 
     args, remaining_args = config_parser.parse_known_args()
 
@@ -133,171 +130,25 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args(remaining_args)
 
 
-def run_actor(
-    args: argparse.Namespace,
-    actor_key: int = None,
-    request_lock: mp.Lock = None,
-    request_queue: List[int] = None,
-    observation_queue: mp.Queue = None,
-    action_queue: mp.Queue = None,
-    termination_event: mp.Event = None
-):
-    """Run actor with serial or parallel inference."""
-
-    if not args.simple:
-        args.name = f'ai{actor_key:02d}'
-
-        for arg in (actor_key, request_lock, request_queue, observation_queue, action_queue, termination_event):
-            assert arg is not None, 'Parallel actors require shared remote structures.'
-
-    if args.record:
-        file_indices = [
-            int(filename.split('_')[2][:-4]) for filename in os.listdir(DATA_DIR)
-            if (filename.startswith(args.name) and filename.endswith('.sdg'))]
-
-        file_idx = (max(file_indices)+1) if file_indices else 0
-        file_name = f'{args.name}_demo-{args.tick_rate}_{file_idx:03d}.sdg'
-
-        args.recording_path = os.path.join(DATA_DIR, file_name)
-
-    if args.simple:
-        actor = SDGSimpleActor(args)
-
-    else:
-        actor = SDGRemoteActor(
-            args,
-            actor_key,
-            request_lock,
-            request_queue,
-            observation_queue,
-            action_queue)
-
-    actor.logger.name = args.name
-    actor.logger.propagate = False
-    actor.logger.info('Running...')
-
-    actor.session_running = True
-
-    previous_clock: float = None
-    current_clock: float = None
-
-    try:
-        while actor.session_running and (args.simple or not termination_event.is_set()):
-            # Update loop timekeeping
-            current_clock = actor._clock()
-            dt_loop = (current_clock - previous_clock) if previous_clock is not None else 0.
-            previous_clock = current_clock
-
-            # Update recorder counter and timestamp
-            actor.recorder.update_meta(current_clock)
-
-            # Advance local state
-            actor.step(dt_loop, current_clock)
-
-            # Cache and squeeze records
-            actor.recorder.cache_chunks()
-            actor.recorder.squeeze()
-
-            # Delay to target specified FPS
-            actor._fps_limiter.update_and_delay(actor._clock() - current_clock, current_clock)
-
-    except KeyboardInterrupt:
-        if not args.simple:
-            termination_event.set()
-
-    except ConnectionError:
-        actor.logger.debug('Lost connection to the server.')
-
-    else:
-        if args.simple or termination_event.is_set():
-            actor.logger.debug('Process ended by user.')
-
-        else:
-            actor.logger.debug('Session ended.')
-
-        # Explicitly send any final messages still in queue due to sending stride
-        if current_clock is not None:
-            actor._send_client_data(current_clock)
-
-            # Include slight delay to allow them to reach the server before disconnecting
-            actor._fps_limiter.delay(0.5)
-
-    # Saving and cleanup
-    actor._socket.close()
-
-    if actor.recorder.file_path is not None:
-        actor.recorder.restore_chunks()
-        actor.recorder.squeeze(all_=True)
-        actor.recorder.save()
-
-        actor.logger.info("Recording saved to: '%s'.", actor.recorder.file_path)
-
-    actor.cleanup()
-
-    actor.logger.info('Stopped.')
-
-    # Signal other processes to terminate as well
-    if not termination_event.is_set():
-        termination_event.set()
-
-
 if __name__ == '__main__':
     parsed_args = parse_args()
 
-    if parsed_args.record and not os.path.exists(DATA_DIR):
-        os.makedirs(DATA_DIR)
+    if parsed_args.record:
+        if not os.path.exists(DATA_DIR):
+            os.makedirs(DATA_DIR)
+
+        if parsed_args.recording_path is None:
+            file_indices = [
+                int(filename.split('_')[2][:-4]) for filename in os.listdir(DATA_DIR)
+                if (filename.startswith(parsed_args.name) and filename.endswith('.sdg'))]
+
+            file_idx = (max(file_indices)+1) if file_indices else 0
+            file_name = f'{parsed_args.name}_demo-{parsed_args.tick_rate}_{file_idx:03d}.sdg'
+
+            parsed_args.recording_path = os.path.join(DATA_DIR, file_name)
 
     if parsed_args.device is not None and parsed_args.device.startswith('cuda'):
         _ = torch.cuda.device_count()
 
-    if parsed_args.simple:
-        run_actor(parsed_args)
-
-    else:
-        mp_manager = mp.Manager()
-        termination_event = mp_manager.Event()
-        actor_keys = list(range(parsed_args.n_actors))
-        model_version = mp_manager.Value('i', -1)
-        model_branch = mp_manager.Value('i', 0)
-
-        inferent = Inferent(
-            parsed_args,
-            actor_keys,
-            model_version,
-            model_branch,
-            mp_manager,
-            parsed_args.device,
-            termination_event)
-
-        actors = [
-            threading.Thread(
-                target=run_actor,
-                args=(
-                    parsed_args,
-                    actor_key,
-                    inferent.key_lock,
-                    inferent.request_queue,
-                    inferent.observation_queues[actor_key],
-                    inferent.action_queues[actor_key],
-                    termination_event),
-                daemon=True)
-            for actor_key in actor_keys]
-
-        for actor in actors:
-            actor.start()
-
-        try:
-            while not termination_event.is_set():
-                sleep(1.)
-
-        except KeyboardInterrupt:
-            termination_event.set()
-
-        for actor in actors:
-            actor.join()
-
-        for worker in inferent.workers:
-            worker.join()
-            worker.close()
-
-        mp_manager.shutdown()
+    client = SDGActorClient(parsed_args)
+    sys.exit(client.run())

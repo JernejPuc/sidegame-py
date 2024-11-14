@@ -395,7 +395,18 @@ class SDGServer(Server):
             if user_role < GameID.ROLE_ADMIN and moved_player_id != player_id:
                 return None
 
-            return queued_events.extend(self.session.move_player(moved_player_id, team, drops=True))
+            # Set teams automatically
+            elif user_role == GameID.ROLE_ADMIN and team == GameID.GROUP_OBJECTS:
+                n_to_move = moved_player_id
+
+                for i, player_id in zip(range(n_to_move), self.session.players):
+                    team = GameID.GROUP_TEAM_CT if i % 2 else GameID.GROUP_TEAM_T
+                    queued_events.extend(self.session.move_player(player_id, team, drops=True))
+
+            else:
+                queued_events.extend(self.session.move_player(moved_player_id, team, drops=True))
+
+            return None
 
         elif log_id == GameID.LOG_BUY:
             can_buy = self.session.check_player_buy_eligibility(player_id)

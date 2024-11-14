@@ -215,29 +215,6 @@ def batch_crop(
     return x[batch_indices, :, h_indices, w_indices].permute(0, 3, 1, 2)
 
 
-def prepare_inputs(
-    frame: np.ndarray,
-    spectral_vectors: np.ndarray,
-    mkbd_state: List[Union[int, float]],
-    focal_point: Tuple[int, int],
-    eps: float = 1e-12,
-    device: torch.device = None
-) -> Tuple[torch.Tensor]:
-    """Adjust the range of inputs and convert them to tensors for model inference."""
-
-    # BGR -> RGB and to [0., 1.] range
-    frame = frame[..., ::-1] / 255.
-    spectral_vectors = spectral_vectors / (-10.*np.log10(eps)) + 1.
-
-    # Move channels to first axis, add batch axis, and convert to tensors on target device
-    x_visual = torch.as_tensor(np.moveaxis(frame, 2, 0)[None], dtype=torch.float, device=device)
-    x_audio = torch.as_tensor(spectral_vectors[None], dtype=torch.float, device=device)
-    x_mkbd = torch.as_tensor(mkbd_state, dtype=torch.float, device=device)[None]
-    x_focus = torch.as_tensor(focal_point, dtype=torch.long, device=device)[None]
-
-    return x_visual, x_audio, x_mkbd, x_focus
-
-
 def supervised_loss(
     x_focus: torch.Tensor,
     x_action: torch.Tensor,

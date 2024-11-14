@@ -480,7 +480,7 @@ def get_mel_basis(sampling_rate: int = 44100, n_fft: int = 2048, n_mel: int = 64
     # Weights per filter should sum to 1 (const. area)
     # NOTE: If there are divide by zero warnings, it's a problem of discretisation
     # In that case, use more FFT points (`n_fft`) or fewer mel filters (`n_mel`)
-    return weights / np.sum(weights, axis=1)[:, None]
+    return weights / weights.sum(axis=1, keepdims=True)
 
 
 def spectrify(
@@ -507,15 +507,15 @@ def spectrify(
         mel_basis = get_mel_basis(sampling_rate=sampling_rate, n_fft=n_fft, n_mel=n_mel)
 
     if window is None:
-        window = np.hamming(sound.shape[1])[None, :]
+        window = np.hamming(sound.shape[-1])
 
     signal = window * sound / 2**15
 
-    power_spectrum = np.power(np.abs(np.fft.rfft(signal, n_fft, axis=1)), 2)
-    power_spectrum = np.dot(mel_basis, power_spectrum.T)
+    power_spectrum = np.power(np.abs(np.fft.rfft(signal, n_fft, axis=-1)), 2)
+    power_spectrum = np.matmul(power_spectrum, mel_basis.T)
     power_spectrum = 10.*np.log10(np.maximum(power_spectrum, eps))
 
     if ref is not None:
         power_spectrum = np.maximum(power_spectrum - 10.*log10(ref), 10.*log10(eps))
 
-    return power_spectrum.T
+    return power_spectrum

@@ -60,7 +60,7 @@ class SDGLiveClient(SDGLiveClientBase):
     while a background thread feeds sound chunks into `pyaudio.Stream`.
     """
 
-    WINDOW_NAME = 'SiDeGame v2023-07-23'
+    WINDOW_NAME = 'SiDeGame v2024-11-14'
     RENDER_SIZE = (256, 144)
 
     # Tracked mouse/keyboard state indices
@@ -240,7 +240,7 @@ class SDGLiveClient(SDGLiveClientBase):
                                 else:
                                     team = GameID.NULL
 
-                            elif len(words) >= 3:
+                            elif len(words) == 3:
                                 moved_player_id = sim.own_player_id
 
                                 if words[2] == 't':
@@ -249,15 +249,21 @@ class SDGLiveClient(SDGLiveClientBase):
                                     team = GameID.GROUP_TEAM_CT
                                 elif words[2] == 's':
                                     team = GameID.GROUP_SPECTATORS
+                                elif words[2] in '1 2 3 4 5 6 7 8 9 10':
+                                    moved_player_id = int(words[2])
+                                    team = GameID.GROUP_OBJECTS
                                 else:
                                     team = GameID.NULL
+
+                            elif len(words) == 2:
+                                moved_player_id = 10
+                                team = GameID.GROUP_OBJECTS
 
                             else:
                                 team = GameID.NULL
 
                             if team != GameID.NULL:
-                                log = [
-                                    sim.own_player_id, GameID.CMD_SET_TEAM, moved_player_id, team, *(0,)*11, 0.]
+                                log = [sim.own_player_id, GameID.CMD_SET_TEAM, moved_player_id, team, *(0,)*11, 0.]
 
                         elif sim.console_text.startswith('set role'):
                             self.role_key = '0x' + sim.console_text.split(' ')[-1]
@@ -266,8 +272,7 @@ class SDGLiveClient(SDGLiveClientBase):
                                 role_key = int(self.role_key, 16)
 
                                 fractured_role_key = struct.unpack('>4B', struct.pack('>L', role_key))
-                                log = [
-                                    sim.own_player_id, GameID.CMD_SET_ROLE, *fractured_role_key, *(0,)*9, 0.]
+                                log = [sim.own_player_id, GameID.CMD_SET_ROLE, *fractured_role_key, *(0,)*9, 0.]
 
                             except ValueError:
                                 self.logger.warning('Invalid role key.')

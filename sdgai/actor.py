@@ -1,33 +1,53 @@
 """AI client interface of the live client for SDG"""
 
-from abc import abstractmethod
+import asyncio
 from argparse import Namespace
 from collections import deque
-from typing import Any, Callable, Hashable, List, Tuple, Union
+from logging import ERROR
+
 import numpy as np
 import torch
-import torch.multiprocessing as mp
 from torch.distributions.categorical import Categorical
-from sidegame.networking.core import StridedFunction
-from sidegame.game.shared import GameID, Map, Player
-from sidegame.game.client.simulation import Simulation
+
+from sidegame.game import GameID, MapID
 from sidegame.game.client.base import SDGLiveClientBase
-from sidegame.game.client.interface import SDGLiveClient
 from sidegame.game.client.tracking import FocusTracker
 from sidegame.audio import get_mel_basis, spectrify
-from sdgai.utils import prepare_inputs
+
 from sdgai.model import PCNet
 
 
-def logits_to_pi(x_focus: torch.Tensor, x_mkbd: torch.Tensor) -> Tuple[Categorical]:
+# Audio constants
+SAMPLING_RATE = 44100
+HRIR_LEN = 256
+MIN_AMP = 1e-12
+LOG_MIN_AMP = -10. * np.log10(MIN_AMP)
+
+
+def prepare_inputs(frames: np.ndarray, spectra: np.ndarray, mkbds: np.ndarray, foci: np.ndarray, device: str):
+    """Convert stacks of observations into model inputs on target device."""
+
+    # BGR order to RGB, channels last to first, and values to [0., 1.] range
+    frames = np.moveaxis(frames[..., ::-1], -1, 1) / 255.
+    spectra = spectra / LOG_MIN_AMP + 1.
+
+    x_visual = torch.from_numpy(frames).to(device, dtype=torch.float32)
+    x_audio = torch.from_numpy(spectra).to(device, dtype=torch.float32)
+    x_manual = torch.from_numpy(mkbds).to(device, dtype=torch.float32)
+    x_focal = torch.from_numpy(foci).to(device, dtype=torch.int64 if foci.dtype == np.int64 else torch.float32)
+
+    return x_visual, x_audio, x_manual, x_focal
+
+
+def logits_to_pi(x_focus: torch.Tensor, x_mkbd: torch.Tensor) -> tuple[Categorical, ...]:
     """
     Convert tensors of focal and mouse/keyboard state logits to multiple
     categorical distributions.
     """
 
-    x_focus = x_focus.reshape(len(x_focus), -1)
+    x_focus = x_focus.flatten(1)
     x_kbd = torch.sigmoid(x_mkbd[:, :19, None])
-    x_kbd = torch.cat((x_kbd, 1. - x_kbd), dim=-1)
+    x_kbd = torch.cat((1. - x_kbd, x_kbd), dim=-1)
     x_yrel = x_mkbd[:, 19:44]
     x_xrel = x_mkbd[:, 44:69]
     x_mwhl = x_mkbd[:, 69:72]
@@ -42,14 +62,7 @@ def logits_to_pi(x_focus: torch.Tensor, x_mkbd: torch.Tensor) -> Tuple[Categoric
 
 
 class SDGBaseActor(SDGLiveClientBase):
-    """
-    A client that infers actions from a trained (or in-training) PCNet model
-    based on a stream of observations.
-
-    NOTE: Might need more restrictions for sampling mode. Otherwise, the odds
-    inevitably trigger disorienting view transitions too frequently and can
-    hinder the agent past a playable point. The same should apply for RL actors.
-    """
+    """A client that exchanges observations and actions with an external actor."""
 
     # Reaction time in number of steps
     N_DELAY = 6
@@ -61,15 +74,8 @@ class SDGBaseActor(SDGLiveClientBase):
 
     MOUSE_WHEEL = [-1, 0, 1]
 
-    # Audio constants
-    SAMPLING_RATE = 44100
-    HRIR_LEN = 256
-    MIN_AMP = 1e-12
-    N_FFT = 2048
-    N_MEL = 64
-
     # Polled action before actions can be obtained from the model
-    NULL_ACT = ([0, 0, 0, 0, 0, 0, 0, 160, 54, 1, 1, 1, GameID.VIEW_LOBBY, GameID.NULL, Map.PLAYER_ID_NULL, 0.], None)
+    NULL_ACT = ([0, 0, 0, 0, 0, 0, 0, 160, 54, 1, 1, 1, GameID.VIEW_LOBBY, GameID.NULL, MapID.PLAYER_ID_NULL, 0.], None)
 
     # Mouse/keyboard state indices
     # Movement
@@ -100,38 +106,21 @@ class SDGBaseActor(SDGLiveClientBase):
     # MKBD_IDX_CRSR_Y = 18    # Cursor pos.
     # MKBD_IDX_CRSR_X = 19    # Cursor pos.
 
+    cutout_centre_indices: tuple[int, int]
+    mkbd_state: list[int]
+    space_time: float
+    action_skip_ctr: int
+
     def __init__(self, args: Namespace):
         super().__init__(args)
 
-        # Override audio-related settings and samples to properly account for change in time scale
-        if args.time_scale != 1.:
-            real_tick_rate = args.tick_rate / args.time_scale
-            alt_sim = Simulation(real_tick_rate, args.volume, self.sim.own_player_id, self.rng)
-            self.sim.audio_system = alt_sim.audio_system
-            self.audio_stream = alt_sim.audio_system.external_buffer
-            self.sim.inventory = alt_sim.inventory
-            self.sim.sounds = alt_sim.sounds
-            self.sim.movements = alt_sim.movements
-            self.sim.keypresses = alt_sim.keypresses
-            self.sim.footsteps = alt_sim.footsteps
-
-        else:
-            real_tick_rate = args.tick_rate
-
-        # Audio variables
-        self.mel_basis = get_mel_basis(sampling_rate=self.SAMPLING_RATE, n_fft=self.N_FFT, n_mel=self.N_MEL)
-        self.ham_window: np.ndarray = np.hamming(int(self.SAMPLING_RATE/real_tick_rate + (self.HRIR_LEN-1)*2))[None]
-        self.db_ref = self.ham_window.sum()**2 / 2.
-
         # Sampling conditions
-        self.sampling_proba = args.sampling_proba
-        self.sampling_thr = args.sampling_thr
+        self.action_skip = args.action_skip
 
         # Last action state
-        self.cutout_centre_indices = (27, 80)
-        self.mkbd_state = [0]*20
-        self.space_time = 0.
-        self.on_hold = True
+        self.observations: deque[tuple[np.ndarray, np.ndarray, list[int], tuple[int, int]]] = deque()
+        self.actions: deque[tuple[int, int, np.ndarray, float, float, int]] = deque()
+        self.reset_action_state()
 
         # Cutout centre tracking
         if args.focus_path is not None and args.record:
@@ -139,110 +128,34 @@ class SDGBaseActor(SDGLiveClientBase):
         else:
             self.focus = None
 
-        # Inference base
-        self.device = args.device
-        self.strided_inference: Callable = StridedFunction(self.queue_inference, args.tick_rate / args.refresh_rate)
+    def reset_action_state(self):
+        self.observations.clear()
+        self.actions.clear()
+        self.cutout_centre_indices = (27, 80)
+        self.mkbd_state = [0]*20
+        self.space_time = 0.
+        self.action_skip_ctr = 0
 
-    @abstractmethod
-    def clear_queue(self):
-        """Clear inference/action data from shared structures."""
-        raise NotImplementedError
-
-    @abstractmethod
-    def get_queue_length(self) -> int:
-        """Estimate the number of actions in the inference pipeline."""
-        raise NotImplementedError
-
-    @abstractmethod
-    def get_action_from_queue(self) -> Tuple[torch.Tensor]:
-        """
-        Pop the oldest tensors from the queue that is being accessed and updated
-        by inferent workers.
-        """
-        raise NotImplementedError
-
-    def expose_action(self, _inferred_t_action: Tuple[torch.Tensor], _extracted_t_action: Tuple[torch.Tensor]):
-        """Allow inferred sub-actions to populate externally accessible structures."""
-
-    @abstractmethod
-    def infer_action(self, x_visual: torch.Tensor, x_audio: torch.Tensor, x_mkbd: torch.Tensor, x_focus: torch.Tensor):
-        """Get and defer current observations to an available inference worker."""
-        raise ValueError
-
-    def poll_user_input(self, timestamp: float) -> Tuple[Any, Union[Any, None]]:
+    def poll_user_input(self, timestamp: float) -> tuple[list, list | None]:
         """
         Poll or read peripheral events and interpret them as user input
         and optional local log data.
         """
 
-        own_player: Player = self.own_entity
-        sim = self.sim
-        log = None
-
         # Wait for match to start and action queue to fill
-        if not self.session.phase:
-            self.clear_queue()
+        if not self.session.phase or len(self.actions) <= self.N_DELAY:
             return self.NULL_ACT
 
-        elif self.get_queue_length() <= self.N_DELAY:
-            self.cutout_centre_indices = (27, 80)
-            return self.NULL_ACT
-
-        # Get oldest action (or wait until one is available) and unpack it
-        t_action = self.get_action_from_queue()
-        x_focus, x_action = t_action[0], t_action[1]
-
-        # Extract sub-actions from logits
-        if self.sampling_proba and (self.sampling_proba == 1. or self.rng.random() < self.sampling_proba):
-            cat_focus, cat_kbd, cat_yrel, cat_xrel, cat_whly = logits_to_pi(x_focus, x_action)
-
-            act_focus = cat_focus.sample()[0]
-            act_kbd = cat_kbd.sample()[0]
-            act_yrel = cat_yrel.sample()[0]
-            act_xrel = cat_xrel.sample()[0]
-            act_whly = cat_whly.sample()[0]
-
-            new_cutout_centre_indices = np.unravel_index(act_focus.item(), x_focus[0, 0].shape)
-            kbd = act_kbd.numpy()
-
-        else:
-            x_focus = x_focus[0, 0]
-            x_action = x_action[0]
-
-            act_focus = x_focus.argmax()
-            act_kbd = (torch.sigmoid(x_action[:19]) >= 0.5).to(torch.long)
-            act_yrel = x_action[19:44].argmax()
-            act_xrel = x_action[44:69].argmax()
-            act_whly = x_action[69:72].argmax()
-
-            new_cutout_centre_indices = np.unravel_index(act_focus, x_focus.shape)
-            kbd = act_kbd.numpy().astype(int)
-
-        mmot_yrel = self.MOUSE_BINS[act_yrel.item()]
-        mmot_xrel = self.MOUSE_BINS[act_xrel.item()]
-        wheel_y = self.MOUSE_WHEEL[act_whly.item()]
+        # Pop earliest action from queue
+        frow, fcol, kbd, mmot_yrel, mmot_xrel, wheel_y = self.actions.popleft()
 
         # Update tracked focal point
         if self.focus is not None:
             self.focus.update(
-                2*(new_cutout_centre_indices[0]-self.cutout_centre_indices[0]),
-                2*(new_cutout_centre_indices[1]-self.cutout_centre_indices[1]))
+                2*(frow-self.cutout_centre_indices[0]),
+                2*(fcol-self.cutout_centre_indices[1]))
 
-        self.cutout_centre_indices = new_cutout_centre_indices
-
-        # TODO: Handle confusing and debilitating repeated switching between views
-        if self.rng.random() > 0.1:
-            for act_idx, mkbd_idx in zip([13, 11, 12, 10], range(self.MKBD_IDX_B, self.MKBD_IDX_TAB)):
-                if self.mkbd_state[mkbd_idx]:
-                    act_kbd[act_idx] = (torch.sigmoid(x_action[act_idx]) >= 0.1).to(torch.long)
-
-        if self.rng.random() > 0.1:
-            for act_idx, mkbd_idx in zip([13, 11, 12, 10], range(self.MKBD_IDX_B, self.MKBD_IDX_TAB)):
-                if not self.mkbd_state[mkbd_idx]:
-                    act_kbd[act_idx] = (torch.sigmoid(x_action[act_idx]) >= 0.9).to(torch.long)
-
-        # Expose action for RL
-        self.expose_action(t_action, (act_focus, act_kbd, act_yrel, act_xrel, act_whly))
+        self.cutout_centre_indices = frow, fcol
 
         # Keys
         lbtn, rbtn, space, ekey, gkey, rkey, dkey, akey, wkey, skey, tab, xkey, ckey, bkey = kbd[:14]
@@ -252,7 +165,26 @@ class SDGBaseActor(SDGLiveClientBase):
         kbd_nums = kbd[14:]
         draw_slot = kbd_nums.tolist().index(1) if any(kbd_nums) else 0
 
+        # Reduce held button update freq. with eval. skip to prevent overly repeated switching
+        if self.action_skip:
+            if self.action_skip_ctr >= self.action_skip:
+                self.action_skip_ctr = 0
+
+            else:
+                self.action_skip_ctr += 1
+
+                # Override button actions
+                # NOTE: ekey resolved below
+                gkey = 0
+                bkey = bkey if self.mkbd_state[self.MKBD_IDX_B] else 0
+                xkey = xkey if self.mkbd_state[self.MKBD_IDX_X] else 0
+                ckey = ckey if self.mkbd_state[self.MKBD_IDX_C] else 0
+                tab = tab if self.mkbd_state[self.MKBD_IDX_TAB] else 0
+
         # x/c/b/tab
+        sim = self.sim
+        log = None
+
         if xkey and sim.view != GameID.VIEW_TERMS:
             sim.view = GameID.VIEW_TERMS
             sim.cursor_y, sim.cursor_x = sim.WORLD_FRAME_CENTRE
@@ -293,13 +225,6 @@ class SDGBaseActor(SDGLiveClientBase):
                 sim.view = GameID.VIEW_WORLD
 
         # To clear the message draft, space hold must not be interrupted
-        # When sampling, semi-argmax is used to restrict sampling below a threshold
-        if self.sampling_proba and self.mkbd_state[self.MKBD_IDX_SPACE]:
-            space_argmax = self.sampling_thr <= x_action[..., 2].item() <= (1. - self.sampling_thr)
-
-            if space_argmax:
-                space = 1
-
         if space:
             if self.mkbd_state[self.MKBD_IDX_SPACE]:
                 if sim.message_draft and (timestamp - self.space_time) > 0.5:
@@ -331,21 +256,23 @@ class SDGBaseActor(SDGLiveClientBase):
             sim.wheel_y = min(sim.wheel_y+1, max(len(sim.chat)-5, 0))
 
         # Update cursor and angle movement
-        sim.cursor_y = np.clip(sim.cursor_y + mmot_yrel, 2., 105.)
+        sim.cursor_y = min(max(sim.cursor_y + mmot_yrel, 2.), 105.)
 
         if sim.view == GameID.VIEW_WORLD and not self.session.is_dead_or_spectator(sim.own_player_id):
             sim.cursor_x = 159.5
             d_angle = mmot_xrel
         else:
-            sim.cursor_x = np.clip(sim.cursor_x + mmot_xrel, 66., 253.)
+            sim.cursor_x = min(max(sim.cursor_x + mmot_xrel, 66.), 253.)
             d_angle = 0.
 
         # Get drawn item id from key num
-        draw_id = SDGLiveClient.get_next_item_by_slot(self, draw_slot)
+        own_player = self.session.players[sim.own_player_id]
+
+        draw_id = own_player.get_next_item_by_slot(draw_slot) if draw_slot else GameID.NULL
 
         # Get hovered (entity) ID
         hovered_id = GameID.NULL
-        hovered_entity_id = Map.PLAYER_ID_NULL
+        hovered_entity_id = MapID.PLAYER_ID_NULL
 
         if sim.view == GameID.VIEW_WORLD:
             if self.session.is_dead_or_spectator(sim.own_player_id):
@@ -366,16 +293,13 @@ class SDGBaseActor(SDGLiveClientBase):
                 hovered_id = sim.get_cursor_obs_from_code_view(sim.code_view_store_ct)
 
         # To plant or defuse, E hold must not be interrupted
-        # When sampling, semi-argmax is used to restrict sampling below a threshold
-        can_plant_or_defuse = hovered_id == GameID.ITEM_C4 or \
-            (own_player.held_object is not None and own_player.held_object.item.id == GameID.ITEM_C4)
+        if self.action_skip_ctr:
+            can_plant_or_defuse = hovered_id == GameID.ITEM_C4 or \
+                (own_player.held_object is not None and own_player.held_object.item.id == GameID.ITEM_C4)
 
-        if self.sampling_proba and self.mkbd_state[self.MKBD_IDX_E] and can_plant_or_defuse:
-            ekey_argmax = self.sampling_thr <= x_action[..., 3].item() <= (1. - self.sampling_thr)
+            ekey = 1 if self.mkbd_state[self.MKBD_IDX_E] and can_plant_or_defuse else ekey
 
-            if ekey_argmax:
-                ekey = 1
-
+        # Assemble state
         state = [
             lbtn, rbtn, space, ekey, gkey, rkey, draw_id,
             round(sim.cursor_x), round(sim.cursor_y),
@@ -390,7 +314,7 @@ class SDGBaseActor(SDGLiveClientBase):
         return state, log
 
     def generate_output(self, dt: float):
-        if not self.session.phase:
+        if not self.session.phase or self.own_entity.team == GameID.GROUP_SPECTATORS:
             return
 
         # Get observations
@@ -400,120 +324,204 @@ class SDGBaseActor(SDGLiveClientBase):
         if self.focus is not None:
             self.focus.register(None, self.recorder.counter)
 
-        self.strided_inference()
-
-    def queue_inference(self):
-        """
-        Prepare data for model inference and run forward pass (immediately or
-        remotely).
-        """
-
+        # Prepare data for model inference
         frame = self.sim.get_frame()
+        sound = self.sim.get_sound()
 
-        self.sim.audio_system.step()
-        sound = self.sim.audio_system.external_buffer.popleft()
-
-        spectral_vectors = spectrify(
-            sound, mel_basis=self.mel_basis, window=self.ham_window, sampling_rate=self.SAMPLING_RATE, n_fft=self.N_FFT,
-            n_mel=self.N_MEL, eps=self.MIN_AMP, ref=self.db_ref)
-
-        x_visual, x_audio, x_mkbd, x_focus = prepare_inputs(
-            frame, spectral_vectors, self.mkbd_state, self.cutout_centre_indices, self.MIN_AMP, self.device)
-
-        self.infer_action(x_visual, x_audio, x_mkbd, x_focus)
+        self.observations.append((frame, sound, self.mkbd_state, self.cutout_centre_indices))
 
     def cleanup(self):
-        if self.focus is not None:
-            self.focus.finish(self.logger)
+        if self.stats is not None:
+            path_to_stats = self.stats.save()
+
+            self.logger.info('Stats saved to: %s', path_to_stats)
 
 
-class SDGSimpleActor(SDGBaseActor):
-    """An actor using serial (single-threaded) local inference."""
+class SDGActorClient:
+    """
+    An actor manager using asynchronous (two-threaded) local inference
+    to infer actions of a trained PCNet model and update their client states.
+    """
 
     def __init__(self, args: Namespace):
-        super().__init__(args)
+        self.sampling_prob = args.sampling_prob
+        self.rng = np.random.default_rng(args.seed)
+        self.event_loop = asyncio.get_event_loop()
 
-        self.actor_keys = [self.own_entity.name]
-        self.actions = deque()
+        # Init. actors
+        self.actor_keys = list(range(args.n_actors))
+        self.actors: list[SDGBaseActor] = []
 
+        for i in range(args.n_actors):
+            args.name = f'ai{i:02d}'
+            args.seed = None if args.seed is None else (args.seed + i + 1)
+
+            self.actors.append(actor := SDGBaseActor(args))
+
+            # Prevent duplication beyond the first actor
+            if i == 0:
+                actor.logger.name = 'AIClient'
+                args.recording_path = None
+                args.logging_level = ERROR
+
+            else:
+                actor.logger.name = f'AIClient{i:02d}'
+
+        # Audio filters
+        self.mel_basis = get_mel_basis(SAMPLING_RATE)
+        self.ham_window: np.ndarray = np.hamming(int(SAMPLING_RATE/args.tick_rate + (HRIR_LEN-1)*2))
+        self.db_ref = self.ham_window.sum()**2 / 2.
+
+        # Load model
         if args.seed is not None:
             torch.manual_seed(args.seed)
 
-        self.model = PCNet(critic=False)
+        self.model = PCNet()
+        self.device = torch.device(args.device)
 
         if args.checkpoint_path is not None:
-            self.model = self.model.load(args.checkpoint_path, device=args.device)
+            self.model = self.model.load(args.checkpoint_path, device=self.device)
 
         self.model.eval()
 
-    def clear_queue(self):
-        self.actions.clear()
+    async def infer(self):
+        obs_queues = [actor.observations for actor in self.actors]
 
-    def get_queue_length(self) -> int:
-        return len(self.actions)
-
-    def get_action_from_queue(self) -> Tuple[torch.Tensor]:
-        return self.actions.popleft()
-
-    def infer_action(self, x_visual: torch.Tensor, x_audio: torch.Tensor, x_mkbd: torch.Tensor, x_focus: torch.Tensor):
-        with torch.no_grad():
-            self.actions.append(self.model(x_visual, x_audio, x_mkbd, x_focus, self.actor_keys, detach=True))
-
-
-class SDGRemoteActor(SDGBaseActor):
-    """An actor using remote multi-threaded inference."""
-
-    def __init__(
-        self,
-        args: Namespace,
-        key: Hashable,
-        request_lock: mp.Lock,
-        request_queue: List[Hashable],
-        inference_queue: mp.Queue,
-        action_queue: mp.Queue
-    ):
-        self.key = key
-        self.actor_keys = key
-        self.request_lock = request_lock
-        self.request_queue = request_queue
-        self.inference_queue = inference_queue
-        self.action_queue = action_queue
-
-        self.expose: bool = args.expose
-        self.values = deque([0.])
-        self.logits = deque()
-        self.obs = deque()
-        self.act = deque()
-
-        super().__init__(args)
-
-    def clear_queue(self):
-        while self.inference_queue.qsize():
-            _ = self.inference_queue.get()
-
-        while self.action_queue.qsize():
-            _ = self.action_queue.get()
-
-    def get_queue_length(self) -> int:
-        return self.action_queue.qsize() + self.inference_queue.qsize()
-
-    def get_action_from_queue(self) -> Union[Tuple[torch.Tensor], None]:
-        return self.action_queue.get()
-
-    def expose_action(self, _inferred_t_action: Tuple[torch.Tensor], _extracted_t_action: Tuple[torch.Tensor]):
-        if not self.expose:
+        # All queues must have at least one observation
+        if not all(obs_queues):
             return
 
-        # Inferent should also return a value, storing or exposing it for later steps
-        self.values.append(_inferred_t_action[2].item())
-        self.logits.append(_inferred_t_action[:2])
-        self.act.append(_extracted_t_action)
+        # Gather observations
+        frames, sounds, mkbds, foci = [], [], [], []
 
-    def infer_action(self, x_visual: torch.Tensor, x_audio: torch.Tensor, x_mkbd: torch.Tensor, x_focus: torch.Tensor):
-        self.inference_queue.put((x_visual, x_audio, x_mkbd, x_focus, self.actor_keys))
+        for obs_queue in obs_queues:
+            frame, sound, mkbd, focus = obs_queue.popleft()
 
-        with self.request_lock:
-            self.request_queue.append(self.key)
+            frames.append(frame)
+            sounds.append(sound)
+            mkbds.append(mkbd)
+            foci.append(focus)
 
-        if self.expose:
-            self.obs.append((x_visual, x_audio, x_mkbd, x_focus))
+        # Batch observations
+        frames = np.stack(frames)
+        sounds = np.stack(sounds)
+        mkbds = np.stack(mkbds)
+        foci = np.stack(foci)
+
+        # Preprocess
+        spectra = spectrify(sounds, self.mel_basis, self.ham_window, SAMPLING_RATE, eps=MIN_AMP, ref=self.db_ref)
+
+        x_visual, x_audio, x_manual, x_focal = prepare_inputs(frames, spectra, mkbds, foci, self.device)
+
+        # Run forward pass
+        with torch.inference_mode():
+            x_focus, x_action = self.model(x_visual, x_audio, x_manual, x_focal, self.actor_keys, detach=True)
+
+        # Extract sub-actions from logits
+        if self.sampling_prob and (self.sampling_prob == 1. or self.rng.random() < self.sampling_prob):
+            cat_focus, cat_kbd, cat_yrel, cat_xrel, cat_whly = logits_to_pi(x_focus, x_action)
+
+            a_focus = cat_focus.sample()
+            a_kbd = cat_kbd.sample()
+            a_yrel = cat_yrel.sample()
+            a_xrel = cat_xrel.sample()
+            a_whly = cat_whly.sample()
+
+        else:
+            a_focus = x_focus.flatten(1).argmax(-1)
+            a_kbd = (x_action[:, :19].sigmoid() >= 0.5).to('cpu', dtype=torch.int64)
+            a_yrel = x_action[:, 19:44].argmax(-1)
+            a_xrel = x_action[:, 44:69].argmax(-1)
+            a_whly = x_action[:, 69:72].argmax(-1)
+
+        a_focus = a_focus.cpu().numpy()
+        n_cols = x_focus.shape[-1]
+        a_frow = a_focus // n_cols
+        a_fcol = a_focus % n_cols
+
+        a_kbd = a_kbd.cpu().numpy()
+        a_yrel = np.take(SDGBaseActor.MOUSE_BINS, a_yrel.cpu().numpy())
+        a_xrel = np.take(SDGBaseActor.MOUSE_BINS, a_xrel.cpu().numpy())
+        a_whly = np.take(SDGBaseActor.MOUSE_WHEEL, a_whly.cpu().numpy())
+
+        # Update action queues
+        for actor, *action in zip(self.actors, a_frow, a_fcol, a_kbd, a_yrel, a_xrel, a_whly):
+            actor.actions.append(action)
+
+    async def step(self, dt_loop: float, current_clock: float):
+        for actor in self.actors:
+            actor.step(dt_loop, current_clock)
+
+    def run(self) -> int:
+        spectator = self.actors[0]
+        spectator.logger.info('Running...')
+
+        for actor in self.actors:
+            actor.session_running = True
+
+        previous_clock: float = None
+        current_clock: float = None
+        session_time = 0.
+
+        try:
+            while spectator.session_running:
+
+                # Update loop timekeeping
+                current_clock = spectator._clock()
+                dt_loop = (current_clock - previous_clock) if previous_clock is not None else 0.
+                previous_clock = current_clock
+
+                # Update recorder counter and timestamp
+                spectator.recorder.update_meta(current_clock)
+
+                # Advance local state
+                self.event_loop.run_until_complete(asyncio.gather(self.step(dt_loop, current_clock), self.infer()))
+
+                # Reset model state
+                if spectator.session.time < session_time:
+                    self.model.clear()
+
+                    for actor in self.actors:
+                        actor.reset_action_state()
+
+                session_time = spectator.session.time
+
+                # Cache and squeeze records
+                spectator.recorder.cache_chunks()
+                spectator.recorder.squeeze()
+
+                # Delay to target specified FPS
+                spectator._fps_limiter.update_and_delay(spectator._clock() - current_clock, current_clock)
+
+        except KeyboardInterrupt:
+            spectator.logger.debug('Process ended by user.')
+
+        except (ConnectionError, TimeoutError):
+            spectator._log_error('Lost connection to the server.')
+
+        else:
+            spectator.logger.debug('Session ended.')
+
+            # Explicitly send any final messages still in queue due to sending stride
+            if current_clock is not None:
+                for actor in self.actors:
+                    actor._send_client_data(current_clock)
+
+                # Include slight delay to allow them to reach the server before disconnecting
+                spectator._fps_limiter.delay(0.5)
+
+        # Saving and cleanup
+        if spectator.recorder.file_path is not None:
+            spectator.recorder.restore_chunks()
+            spectator.recorder.squeeze(all_=True)
+            spectator.recorder.save()
+
+            spectator.logger.info("Recording saved to: '%s'.", spectator.recorder.file_path)
+
+        for actor in self.actors:
+            actor._socket.close()
+            actor.cleanup()
+
+        spectator.logger.info('Stopped.')
+
+        return 0
