@@ -18,7 +18,7 @@ consistent across human and AI interfaces.
 ## Disclaimer
 
 *SiDeGame* is inspired by
-[Counter-Strike: Global Offensive](https://store.steampowered.com/app/730/CounterStrike_Global_Offensive/).
+[Counter-Strike](https://store.steampowered.com/app/730/CounterStrike_Global_Offensive/).
 
 Due to technical limitations of distributed AI training processes,
 particularly the restriction of environment simulations to CPU,
@@ -63,11 +63,8 @@ sudo apt install libsdl2-dev libsdl2-2.0-0
 sudo apt install portaudio19-dev
 ```
 
-Should `pyaudio` fail to install on Windows, you could try installing it from a
-[wheel](https://www.lfd.uci.edu/~gohlke/pythonlibs/#pyaudio).
-
 See the project descriptions of [pysdl2](https://pypi.org/project/PySDL2/)
-and [pyaudio](https://people.csail.mit.edu/hubert/pyaudio/) for more details.
+and [pyaudio](https://pypi.org/project/PyAudio/) for more details.
 
 
 ### Editable install
@@ -227,7 +224,7 @@ port forwarding, etc.
 
 ## Citation
 
-`sidegame-py` was created in the scope of my [master's thesis](https://plus.si.cobiss.net/opac7/bib/75138819) (in Slovene):
+`sidegame-py` was created in the scope of my [master's thesis](https://plus.cobiss.net/cobiss/si/en/bib/75138819) (in Slovene):
 
 ```
 @article{Puc_2021,
@@ -237,7 +234,7 @@ port forwarding, etc.
  url={https://repozitorij.uni-lj.si/IzpisGradiva.php?lang=eng&id=129594}}
 ```
 
-A much shorter [conference paper](https://plus.si.cobiss.net/opac7/bib/86401795) is available in English:
+A much shorter [conference paper](https://plus.cobiss.net/cobiss/si/en/bib/86401795) is available in English:
 
 ```
 @inproceedings{Puc_Sadikov_2021,
