@@ -812,7 +812,7 @@ class Simulation:
         self.chat.append(message)
 
     def add_effect(self, effect: Effect):
-        """Give the effect an identifer and add it to tracked effects."""
+        """Give the effect an identifier and add it to tracked effects."""
 
         effect_id = (max(self.effects.keys()) + 1) if self.effects else 0
         self.effects[effect_id] = effect
