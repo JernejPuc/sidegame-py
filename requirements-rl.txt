@@ -1,1 +1,1 @@
-discit @ git+https://github.com/jernejpuc/discit@main
+discit @ git+https://github.com/jernejpuc/discit@v0.2.2

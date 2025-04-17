@@ -630,7 +630,7 @@ class SDGSyncRunner:
         optimizer = NAdamW((param for param in model.parameters() if param.requires_grad), device=self.ckpter.device)
 
         model.to(self.ckpter.device)
-        self.ckpter.load_model(model, optimizer)
+        self.ckpter.restore(model, optimizer)
 
         scheduler = LRScheduler(optimizer, starting_step=self.ckpter.meta['update_step'])
 
